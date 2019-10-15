@@ -4,4 +4,5 @@ COPY . /app
 RUN pip install --trusted-host pypi.python.org -r requirements.txt
 EXPOSE 13800
 ENV NAME World
-CMD ["python", "main.py"]
+ENV FORWARDING_ADDRESS Empty
+CMD python main.py $FORWARDING_ADDRESS
