@@ -63,7 +63,7 @@ def getKey(keyname):
     if keyname in d['data']:
         return jsonify('doesExist: true, ' + 'message: Retrieved successfully, ' + "value: " + json.dumps(d['data'][keyname]['value'])), 200
     else:
-        return jsonify('doesExist: False')
+        return jsonify(doesExist= False, error= 'Key does not exist',message='Error in GET'),404
 
 # Delete key    
 @app.route('/kv-store/<keyname>', methods = ['DELETE'])
@@ -73,6 +73,7 @@ def deleteKey(keyname):
 
     if keyname in d['data']:
         # delete some stuff 
+        del d['data'][keyname]
         return jsonify('doesExist: true, message: Deleted successfully'), 200
     else:
         return jsonify('doesExist: false, error: Key does not exist, message: Error in DELETE'), 404
