@@ -33,7 +33,7 @@ def putKey(keyname):
 
     # Check if keyname over 50 characters
     if len(keyname) > 50:
-        return jsonify('error:' 'Key is too long, ' + 'message:' + 'Error in PUT'), 201
+        return jsonify(error= 'Key is too long ', message= 'Error in PUT'), 201
 
     # Get request
     req = request.get_json()
@@ -42,16 +42,16 @@ def putKey(keyname):
     if keyname in d['data']:
         d['data'][keyname]['replaced'] = True
         d['data'][keyname]['value'] = req.get('value')
-        return jsonify('message: ' + 'Updated successfully, ' + 'replaced: ' + json.dumps(d['data'][keyname]['replaced'])), 200
+        return jsonify(message =  'Updated successfully ',replaced =   json.dumps(d['data'][keyname]['replaced'])), 200
     
  # Add new key
     if req:
         d['data'][keyname] = d['data'].get(keyname, {})
         d['data'][keyname]['value'] = req.get('value')
         d['data'][keyname]['replaced'] = False
-        return jsonify('message: ' + 'Added successfully, ' + 'replaced: ' + json.dumps(d['data'][keyname]['replaced'])), 201
+        return jsonify(message = 'Added successfully',replaced = json.dumps(d['data'][keyname]['replaced'])), 201
     else:
-        return jsonify('error: ' + 'value is missing,' + ' message: ' + 'Error in PUT'), 400
+        return jsonify(error = 'value is missing', message = 'Error in PUT'), 400
 
 # Get key    
 @app.route('/kv-store/<keyname>', methods = ['GET'])
@@ -61,7 +61,7 @@ def getKey(keyname):
 
     # Check if key already exists
     if keyname in d['data']:
-        return jsonify('doesExist: true, ' + 'message: Retrieved successfully, ' + "value: " + json.dumps(d['data'][keyname]['value'])), 200
+        return jsonify(doesExist= True, message= 'Retrieved successfully ',  value=json.dumps(d['data'][keyname]['value'])), 200
     else:
         return jsonify(doesExist= False, error= 'Key does not exist',message='Error in GET'),404
 
@@ -74,9 +74,9 @@ def deleteKey(keyname):
     if keyname in d['data']:
         # delete some stuff 
         del d['data'][keyname]
-        return jsonify('doesExist: true, message: Deleted successfully'), 200
+        return jsonify(doesExist= True, message= 'Deleted successfully'), 200
     else:
-        return jsonify('doesExist: false, error: Key does not exist, message: Error in DELETE'), 404
+        return jsonify(doesExist= False, error= 'Key does not exist', message= 'Error in DELETE'), 404
 
 
 def forward_request(request):
@@ -88,7 +88,7 @@ def forward_request(request):
             data=request.get_data())
         return  jsonify(response.json()), response.status_code
     except Exception:
-        return jsonify('error: Main instance is down, message: Error in ' + request.method), 503
+        return jsonify(error = 'Main instance is down', message= 'Error in ' + request.method), 503
 
 if __name__ == "__main__":
     app.debug = True
