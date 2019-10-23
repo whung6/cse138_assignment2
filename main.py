@@ -40,16 +40,14 @@ def putKey(keyname):
 
     # Check if key already exists
     if keyname in d['data']:
-        d['data'][keyname]['replaced'] = True
         d['data'][keyname]['value'] = req.get('value')
-        return jsonify(message =  'Updated successfully ',replaced =   json.dumps(d['data'][keyname]['replaced'])), 200
+        return jsonify(message =  'Updated successfully',replaced=True), 200
     
  # Add new key
     if req:
         d['data'][keyname] = d['data'].get(keyname, {})
         d['data'][keyname]['value'] = req.get('value')
-        d['data'][keyname]['replaced'] = False
-        return jsonify(message = 'Added successfully',replaced = json.dumps(d['data'][keyname]['replaced'])), 201
+        return jsonify(message = 'Added successfully',replaced=False), 201
     else:
         return jsonify(error = 'value is missing', message = 'Error in PUT'), 400
 
@@ -61,7 +59,7 @@ def getKey(keyname):
 
     # Check if key already exists
     if keyname in d['data']:
-        return jsonify(doesExist= True, message= 'Retrieved successfully ',  value=json.dumps(d['data'][keyname]['value'])), 200
+        return jsonify(doesExist= True, message= 'Retrieved successfully',  value=d['data'][keyname]['value']), 200
     else:
         return jsonify(doesExist= False, error= 'Key does not exist',message='Error in GET'),404
 
@@ -85,7 +83,8 @@ def forward_request(request):
             method=request.method,
             url=request.url.replace(request.host, FORWARDING_ADDRESS),
             headers={key: value for (key, value) in request.headers if key != 'Host'},
-            data=request.get_data())
+            data=request.get_data(),
+            timeout=20)
         return  jsonify(response.json()), response.status_code
     except Exception:
         return jsonify(error = 'Main instance is down', message= 'Error in ' + request.method), 503
