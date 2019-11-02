@@ -3,6 +3,6 @@ WORKDIR /app
 COPY . /app
 RUN pip install --trusted-host pypi.python.org -r requirements.txt
 EXPOSE 13800
-ENV NAME World
-ENV FORWARDING_ADDRESS Empty
-CMD python main.py $FORWARDING_ADDRESS
+ENV ADDRESS EMPTY
+ENV VIEW EMPTY
+CMD python main.py $ADDRESS $VIEW
