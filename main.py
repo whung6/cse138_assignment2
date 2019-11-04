@@ -16,7 +16,7 @@ app = Flask(__name__)
 
 @app.route("/")
 def default():
-    return "CSE 138 Lab 3."
+    return "CSE 138 Lab 2."
 
 # Store key
 d = {}
@@ -26,18 +26,14 @@ d['data'] = {}
 ADDRESS = ""
 #current view
 view=[]
-# next address, update this whenever view changes
-# look below to see what this is used for
-next_address = ""
 
 
 # Insert and update key
 @app.route('/kv-store/keys/<keyname>', methods = ['PUT'])
 def putKey(keyname):
-
     # Check if keyname over 50 characters
     if len(keyname) > 50:
-        return jsonify(error= 'Key is too long ', message = 'Error in PUT'), 201
+        return jsonify(error= 'Key is too long ', message= 'Error in PUT'), 201
 
     # Get request
     req = request.get_json()
@@ -45,15 +41,15 @@ def putKey(keyname):
     # Check if key already exists
     if keyname in d['data']:
         d['data'][keyname]['value'] = req.get('value')
-        return jsonify(message =  'Updated successfully', replaced = True), 200
+        return jsonify(message = 'Updated successfully', replaced = True), 200
     
  # Add new key
     if req:
         d['data'][keyname] = d['data'].get(keyname, {})
         d['data'][keyname]['value'] = req.get('value')
-        return jsonify(message = 'Added successfully', replaced = False, address = ADDRESS), 201
+        return jsonify(message = 'Added successfully', replaced = False), 201
     else:
-        return jsonify(error = 'Value is missing', message = 'Error in PUT'), 400
+        return jsonify(error = 'value is missing', message = 'Error in PUT'), 400
 
 # Get key    
 @app.route('/kv-store/keys/<keyname>', methods = ['GET'])
@@ -61,47 +57,49 @@ def getKey(keyname):
     # Check if key already exists
     if keyname in d['data']:
         payload = { "doesExist": True, "message": 'Retrieved successfully', "value": d['data'][keyname]['value'] }
-        # If it's not directly from client, add the correct address
         if 'from_node' in request.headers:
             payload['address'] = ADDRESS
         return jsonify(payload), 200
     else:
-        # If it's from a node and the next address on list is the address this is from, that means
-        # We have searched all nodes and still can't find the key
-        if 'from_node' in request.headers and request.headers.get('from_node') == next_address:
-            return jsonify(doesExist= False, error= 'Key does not exist',message = 'Error in GET'), 404
-        # Otherwise forward it to the next node
+        if 'from_node' in request.headers:
+            return jsonify(doesExist = False, error = 'Key does not exist', message = 'Error in GET'), 404
         else:
-            return forward_request(request)
+            # Forward to correct node
+            return forward_request(request, view[hash(keyname) % len(view)])
 
 # Delete key    
 @app.route('/kv-store/keys/<keyname>', methods = ['DELETE'])
 def deleteKey(keyname):
 
-    # Same things as get
-    if 'from_node' in request.headers:
-        from_node = request.headers.get('from_node')
+    #same things as get
     if keyname in d['data']:
+        # delete some stuff 
         del d['data'][keyname]
         payload = { 'doesExist': True, 'message': 'Deleted successfully' }
-        if from_node:
+        if 'from_node' in request.headers:
             payload['address'] = ADDRESS
         return jsonify(payload), 200
     else:
-        if from_node and from_node == next_address:
-            return jsonify(doesExist= False, error= 'Key does not exist', message= 'Error in DELETE'), 404
+        if 'from_node' in request.headers: 
+            return jsonify(doesExist = False, error = 'Key does not exist', message = 'Error in DELETE'), 404
         else:
-            return forward_request(request)
+            return forward_request(request,view[hash(keyname) % len(view)])
 
-# Get key count for a shard
-@app.route('/kv-store/key-count', methods = ['GET'])
-def getKeyCount():
-    return jsonify(message = 'Key count retrieved successfully', keycount = len(d['data'])), 200
+#helper method to rehash and redistribute keys according to the new view
+#returns either an error message detailing which node failed to accept their new key(s) or the string "ok"
+#this method tries to do everything in order, rather than broadcasting
+def key_distribute():
+    for key in iter(d):
+        new_index = hash(key) % len(view)
+        if new_index != view.index(ADDRESS): #if the key no longer belongs here, send it where it belongs
+            try:
+                requests.put(view[new_index] + "/kv-store/keys/" + key, headers={'from_node': ADDRESS}, data=jsonify(value = d[key]))
+            except Exception:
+                "node " + view[new_index] + " did not accept key " + key
 
-# View change
-@app.route('/kv-store/view-change', methods = ['PUT'])
 
-def forward_request(request):
+#forwards a request to the given address
+def forward_request(request,node):
     #get the headers since request is immutable
     headers = {key: value for (key, value) in request.headers}
     #if it's not from another node but needs to be forwarded
@@ -111,7 +109,7 @@ def forward_request(request):
     try:
         response = requests.request(
             method=request.method,
-            url=request.url.replace(request.host, next_address),
+            url=request.url.replace(request.host, node),
             headers=headers,
             data=request.get_data(),
             timeout=20)
