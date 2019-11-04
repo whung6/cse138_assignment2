@@ -28,6 +28,22 @@ ADDRESS = ""
 view=[]
 
 
+##EXPERIMENTAL FEATURE:
+#using xor-distance rather than modulo to distribute keys
+#this is a drop-in replacement. Simply replace every use of hash(key) % len(view) with xordist_get_addr(key)
+#advantages: resharading does not require as many keys to change location during a view change
+#advantages: lookup is O(n) in the number of nodes rather than constant-time... but for n < 10,000 this is still practically nothing
+def xordist_get_addr(key):
+    key_hash = hash(key)
+    dist_min = hash(ADDRESS)^key_hash
+    addr_min = ADDRESS
+    for node in iter(view):
+        if hash(node)^key_hash < dist_min:
+            dist_min = hash(node)^key_hash
+            addr_min = node
+    return addr_min
+
+
 # Insert and update key
 @app.route('/kv-store/keys/<keyname>', methods = ['PUT'])
 def putKey(keyname):
@@ -86,6 +102,29 @@ def deleteKey(keyname):
         else:
             return forward_request(request,view[hash(keyname) % len(view)])
 
+@app.route('/kv-store/key-count', methods=['GET'])
+def getKeyCount():
+    return jsonify(message="Key count retrieved successfully",key-count=len(d)),200
+
+
+@app.route('/kv-store/view-change',methods=['PUT'])
+#perform a view change
+def viewChange():
+    req = request.get_json()
+    new_view = req['view']
+    #parse the new view list
+    view = new_view.split(',')
+    err = key_distribute() # do the reshard
+    if err != "ok":
+        return jsonify(message="Error in PUT",error=err)
+    else
+        view_map = []
+        for node in iter(view):
+            count = requests.get(node + "/kv-store/key-count")
+            view_map.append({address = node, key-count = count})
+        return jsonify(message="View change successful", shards = view_map)
+
+
 #helper method to rehash and redistribute keys according to the new view
 #returns either an error message detailing which node failed to accept their new key(s) or the string "ok"
 #this method tries to do everything in order, rather than broadcasting
@@ -96,8 +135,8 @@ def key_distribute():
             try:
                 requests.put(view[new_index] + "/kv-store/keys/" + key, headers={'from_node': ADDRESS}, data=jsonify(value = d[key]))
             except Exception:
-                "node " + view[new_index] " did not accept key " + key
-
+                return "node " + view[new_index] " did not accept key " + key
+    return "ok"
 
 #forwards a request to the given address
 def forward_request(request,node):
@@ -122,6 +161,4 @@ if __name__ == "__main__":
     app.debug = True
     ADDRESS = sys.argv[1]
     view = sys.argv[2].split(',')
-    #get the next address if we need to forward, wrap around the list
-    next_address = view[(view.index(ADDRESS) + 1) % len(view)]
     app.run(host = '0.0.0.0', port = 13800)
