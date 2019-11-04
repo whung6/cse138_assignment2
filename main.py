@@ -26,9 +26,6 @@ d['data'] = {}
 ADDRESS = ""
 #current view
 view=[]
-#next address, update this whenever view changes
-#look below to see what this is used for
-next_address = ""
 
 
 # Insert and update key
@@ -66,21 +63,20 @@ def getKey(keyname):
             payload['address'] = ADDRESS
         return jsonify(payload), 200
     else:
+        #inde
         #if it's from a node and the next address on list is the address this is from, that means
         #we have searched all nodes and still can't find the key
-        if 'from_node' in request.headers and request.headers.get('from_node') == next_address:
+        if 'from_node' in request.headers #always fail if this request was forwarded. Only want one forward to happen.
             return jsonify(doesExist= False, error= 'Key does not exist',message='Error in GET'), 404
-        #otherwise forward it to the next node
+        #otherwise forward it to the right node
         else:
-            return forward_request(request)
+            return forward_request(request,view[hash(keyname) % len(view)])
 
 # Delete key    
 @app.route('/kv-store/keys/<keyname>', methods = ['DELETE'])
 def deleteKey(keyname):
 
     #same things as get
-    if 'from_node' in request.headers:
-        from_node = request.headers.get('from_node')
     if keyname in d['data']:
         # delete some stuff 
         del d['data'][keyname]
@@ -89,13 +85,14 @@ def deleteKey(keyname):
             payload['address'] = ADDRESS
         return jsonify(payload), 200
     else:
-        if from_node and from_node == next_address:
+        if 'from_node' in request.headers #just need to check if there is a from_node header
             return jsonify(doesExist= False, error= 'Key does not exist', message= 'Error in DELETE'), 404
         else:
-            return forward_request(request)
+            return forward_request(request,view[hash(keyname) % len(view)])
 
 
-def forward_request(request):
+#forwards a request to the given address
+def forward_request(request,node):
     #get the headers since request is immutable
     headers = {key: value for (key, value) in request.headers}
     #if it's not from another node but needs to be forwarded
@@ -105,7 +102,7 @@ def forward_request(request):
     try:
         response = requests.request(
             method=request.method,
-            url=request.url.replace(request.host, next_address),
+            url=request.url.replace(request.host, node),
             headers=headers,
             data=request.get_data(),
             timeout=20)
