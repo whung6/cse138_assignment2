@@ -31,7 +31,6 @@ view=[]
 # Insert and update key
 @app.route('/kv-store/keys/<keyname>', methods = ['PUT'])
 def putKey(keyname):
-
     # Check if keyname over 50 characters
     if len(keyname) > 50:
         return jsonify(error= 'Key is too long ', message= 'Error in PUT'), 201
@@ -63,9 +62,6 @@ def getKey(keyname):
             payload['address'] = ADDRESS
         return jsonify(payload), 200
     else:
-        #inde
-        #if it's from a node and the next address on list is the address this is from, that means
-        #we have searched all nodes and still can't find the key
         if 'from_node' in request.headers #always fail if this request was forwarded. Only want one forward to happen.
             return jsonify(doesExist= False, error= 'Key does not exist',message='Error in GET'), 404
         #otherwise forward it to the right node
@@ -89,6 +85,18 @@ def deleteKey(keyname):
             return jsonify(doesExist= False, error= 'Key does not exist', message= 'Error in DELETE'), 404
         else:
             return forward_request(request,view[hash(keyname) % len(view)])
+
+#helper method to rehash and redistribute keys according to the new view
+#returns either an error message detailing which node failed to accept their new key(s) or the string "ok"
+#this method tries to do everything in order, rather than broadcasting
+def key_distribute():
+    for key in iter(d):
+        new_index = hash(key) % len(view)
+        if new_index != view.index(ADDRESS): #if the key no longer belongs here, send it where it belongs
+            try:
+                requests.put(view[new_index] + "/kv-store/keys/" + key, headers={'from_node': ADDRESS}, data=jsonify(value = d[key]))
+            except Exception:
+                "node " + view[new_index] " did not accept key " + key
 
 
 #forwards a request to the given address
