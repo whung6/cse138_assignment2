@@ -1,6 +1,5 @@
 from flask import Flask
 from flask import jsonify
-from redis import Redis, RedisError
 from flask import request
 import os
 import socket
@@ -8,9 +7,6 @@ import json
 import sys
 # flask's request isn't for sending request to other sites
 import requests
-
-# Connect to Redis
-redis = Redis(host="redis", db = 0, socket_connect_timeout = 2, socket_timeout = 2)
 
 app = Flask(__name__)
 
@@ -20,7 +16,6 @@ def default():
 
 # Store key
 d = {}
-d['data'] = {}
 
 #this nodes' address
 ADDRESS = ""
@@ -31,13 +26,13 @@ view=[]
 ##EXPERIMENTAL FEATURE:
 #using xor-distance rather than modulo to distribute keys
 #this is a drop-in replacement. Simply replace every use of hash(key) % len(view) with xordist_get_addr(key)
-#advantages: resharading does not require as many keys to change location during a view change
+#advantages: resharading does not require as many keys to change location during a view change. Less overall complexity.
 #advantages: lookup is O(n) in the number of nodes rather than constant-time... but for n < 10,000 this is still practically nothing
 def xordist_get_addr(key):
     key_hash = hash(key)
     dist_min = hash(ADDRESS)^key_hash
     addr_min = ADDRESS
-    for node in iter(view):
+    for node in iter(view): #find the minimum of distances(measured with XOR) between the hash of the address and the hash of the key
         if hash(node)^key_hash < dist_min:
             dist_min = hash(node)^key_hash
             addr_min = node
@@ -55,14 +50,14 @@ def putKey(keyname):
     req = request.get_json()
 
     # Check if key already exists
-    if keyname in d['data']:
-        d['data'][keyname]['value'] = req.get('value')
+    if keyname in d:
+        d[keyname]['value'] = req.get('value')
         return jsonify(message =  'Updated successfully',replaced=True), 200
     
  # Add new key
     if req:
-        d['data'][keyname] = d['data'].get(keyname, {})
-        d['data'][keyname]['value'] = req.get('value')
+        d[keyname] = d.get(keyname, {})
+        d[keyname]['value'] = req.get('value')
         return jsonify(message = 'Added successfully',replaced=False), 201
     else:
         return jsonify(error = 'value is missing', message = 'Error in PUT'), 400
@@ -71,14 +66,14 @@ def putKey(keyname):
 @app.route('/kv-store/keys/<keyname>', methods = ['GET'])
 def getKey(keyname):
     # Check if key already exists
-    if keyname in d['data']:
-        payload = { "doesExist": True, "message": 'Retrieved successfully', "value": d['data'][keyname]['value'] }
+    if keyname in d:
+        payload = { "doesExist": True, "message": 'Retrieved successfully', "value": d[keyname]['value'] }
         #if it's not diredtly from client, add the correct address
         if 'from_node' in request.headers:
             payload['address'] = ADDRESS
         return jsonify(payload), 200
     else:
-        if 'from_node' in request.headers #always fail if this request was forwarded. Only want one forward to happen.
+        if 'from_node' in request.headers: #always fail if this request was forwarded. Only want one forward to happen.
             return jsonify(doesExist= False, error= 'Key does not exist',message='Error in GET'), 404
         #otherwise forward it to the right node
         else:
@@ -89,22 +84,24 @@ def getKey(keyname):
 def deleteKey(keyname):
 
     #same things as get
-    if keyname in d['data']:
+    if keyname in d:
         # delete some stuff 
-        del d['data'][keyname]
+        del d[keyname]
         payload = { 'doesExist': True, 'message': 'Deleted successfully' }
         if from_node:
             payload['address'] = ADDRESS
         return jsonify(payload), 200
     else:
-        if 'from_node' in request.headers #just need to check if there is a from_node header
+        if 'from_node' in request.headers: #just need to check if there is a from_node header
             return jsonify(doesExist= False, error= 'Key does not exist', message= 'Error in DELETE'), 404
         else:
             return forward_request(request,view[hash(keyname) % len(view)])
 
 @app.route('/kv-store/key-count', methods=['GET'])
 def getKeyCount():
-    return jsonify(message="Key count retrieved successfully",key-count=len(d)),200
+    name = 'key-count'
+    count = len(d)
+    return jsonify(message="Key count retrieved successfully", name=count),200
 
 
 @app.route('/kv-store/view-change',methods=['PUT'])
@@ -117,11 +114,14 @@ def viewChange():
     err = key_distribute() # do the reshard
     if err != "ok":
         return jsonify(message="Error in PUT",error=err)
-    else
+    else:
         view_map = []
         for node in iter(view):
-            count = requests.get(node + "/kv-store/key-count")
-            view_map.append({address = node, key-count = count})
+            try:
+                count = requests.get(node + "/kv-store/key-count")
+            except Exception:
+                return "node " + node + " did not respond to a request for its key count"
+            view_map.append({address: node, key-count: count})
         return jsonify(message="View change successful", shards = view_map)
 
 
@@ -133,9 +133,10 @@ def key_distribute():
         new_index = hash(key) % len(view)
         if new_index != view.index(ADDRESS): #if the key no longer belongs here, send it where it belongs
             try:
-                requests.put(view[new_index] + "/kv-store/keys/" + key, headers={'from_node': ADDRESS}, data=jsonify(value = d[key]))
+                requests.put(view[new_index] + "/kv-store/keys/" + key, headers={'from_node': ADDRESS}, data = jsonify({value: d[key]}))
+                del d[key] #delete the key
             except Exception:
-                return "node " + view[new_index] " did not accept key " + key
+                return "node " + view[new_index] + " did not accept key " + key
     return "ok"
 
 #forwards a request to the given address
