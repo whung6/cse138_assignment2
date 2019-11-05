@@ -32,24 +32,31 @@ view=[]
 @app.route('/kv-store/keys/<keyname>', methods = ['PUT'])
 def putKey(keyname):
     # Check if keyname over 50 characters
+
+    bin = hash(keyname) % len(view)-1
+
+
     if len(keyname) > 50:
         return jsonify(error= 'Key is too long ', message= 'Error in PUT'), 201
 
+        
     # Get request
     req = request.get_json()
-
-    # Check if key already exists
-    if keyname in d['data']:
-        d['data'][keyname]['value'] = req.get('value')
-        return jsonify(message =  'Updated successfully',replaced=True), 200
     
+    if(view[bin]==ADDRESS):
+        # Check if key already exists
+        if keyname in d['data']:
+            d['data'][keyname]['value'] = req.get('value')
+            return jsonify(message =  'Updated successfully',replaced=True), 200
  # Add new key
-    if req:
-        d['data'][keyname] = d['data'].get(keyname, {})
-        d['data'][keyname]['value'] = req.get('value')
-        return jsonify(message = 'Added successfully',replaced=False), 201
+        if req:
+            d['data'][keyname] = d['data'].get(keyname, {})
+            d['data'][keyname]['value'] = req.get('value')
+            return jsonify(message = 'Added successfully',replaced=False), 201
+        else:
+            return jsonify(error = 'value is missing', message = 'Error in PUT'), 400
     else:
-        return jsonify(error = 'value is missing', message = 'Error in PUT'), 400
+        forward_request(req, view[bin])
 
 # Get key    
 @app.route('/kv-store/keys/<keyname>', methods = ['GET'])
