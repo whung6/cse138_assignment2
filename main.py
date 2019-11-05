@@ -124,6 +124,7 @@ def viewChange():
         return jsonify(message="Error in PUT",error=err)
     else:
         view_map = []
+        count = 0
         for node in iter(view):
             try:
                 count = requests.get(node + "/kv-store/key-count")
