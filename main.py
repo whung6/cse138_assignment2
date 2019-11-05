@@ -26,7 +26,7 @@ view=[]
 ##EXPERIMENTAL FEATURE:
 #using xor-distance rather than modulo to distribute keys
 #this is a drop-in replacement. Simply replace every use of view[hash(key) % len(view)] with xordist_get_addr(key)
-#advantages: resharading does not require as many keys to change location during common view change patterns(adding/removing a single node)
+#advantages: resharading does not require as many keys to change location during a reshard
 #advantages: lookup is O(n) in the number of nodes rather than constant-time... but for n < 10,000 this is still practically nothing
 def xordist_get_addr(key):
     key_hash = hash(key)
@@ -152,7 +152,7 @@ def key_distribute():
 def xordist_key_distribute():
     for key in iter(d):
         new_addr = xordist_get_addr(key)
-        if new_index != ADDRESS: #if the key no longer belongs here, send it where it belongs
+        if new_addr != ADDRESS: #if the key no longer belongs here, send it where it belongs
             try:
                 requests.put(new_addr + "/kv-store/keys/" + key, headers={'from_node': ADDRESS}, data = jsonify({value: d[key]}))
                 del d[key] #delete the key
