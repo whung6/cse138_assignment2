@@ -112,43 +112,11 @@ def getKeyCount():
 
 @app.route('/kv-store/view-change',methods = ['PUT'])
 #perform a view change
-def viewChange():
-    global view
-    req = request.get_json()
-    new_view = req['view']
-    # If we need to, notify all the other nodes of this view change
-    if 'from_node' not in request.headers:
-        for node in iter(view):
-            try:
-                requests.put(node + "/kv-store/view-change", headers = {'from_node': ADDRESS}, data = request.get_data())
-            except Exception:
-                return "node " + node + " did not respond to notification of view change"
-    #parse the new view list
-    view = new_view.split(',')
-    #do the reshard
-    err = key_distribute()
-    if err != "ok":
-        return jsonify(message = "Error in PUT", error = err)
-    else:
-        view_map = []
-        for node in iter(view):
-            try:
-                count = requests.get(node + "/kv-store/key-count")
-            except Exception:
-                return "node " + node + " did not respond to a request for its key count"
-            view_map.append({address: node, key-count: count})
-        return jsonify(message = "View change successful", shards = view_map)
 
 
 # Helper method to rehash and redistribute keys according to the new view
 # Returns either an error message detailing which node failed to accept their new key(s) or the string "ok"
 # This method tries to do everything in order, rather than broadcasting
-
-@app.route('/kv-store/key-count', methods=['GET'])
-def getKeyCount():
-    name = 'key-count'
-    count = len(d)
-    return jsonify(message="Key count retrieved successfully", name=count),200
 
 
 @app.route('/kv-store/view-change',methods=['PUT'])
