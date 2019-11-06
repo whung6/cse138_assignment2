@@ -190,8 +190,7 @@ def key_distribute():
         # If the key no longer belongs here, send it where it belongs
         if new_index != view.index(ADDRESS): 
             try:
-<<<<<<< HEAD
-                requests.put(view[new_index] + "/kv-store/keys/" + key, headers={'from_node': ADDRESS}, data = jsonify({value: d[key]}))
+                requests.put(view[new_index] + "/kv-store/keys/" + key, headers={'from_node': ADDRESS}, data = jsonify({value: d[key]['value']}))
                 del d[key] #delete the key
             except Exception:
                 return "node " + view[new_index] + " did not accept key " + key
