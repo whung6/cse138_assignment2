@@ -42,29 +42,25 @@ def xordist_get_addr(key):
 # Insert and update key
 @app.route('/kv-store/keys/<keyname>', methods = ['PUT'])
 def putKey(keyname):
-    
-    bin = hash(keyname) % len(view) 
     # Check if keyname over 50 characters
     if len(keyname) > 50:
         return jsonify(error= 'Key is too long ', message= 'Error in PUT'), 201
 
     # Get request
     req = request.get_json()
-    if(view[bin] == ADDRESS):
-        # Check if key already exists
-        if keyname in d:
-            d[keyname] = req.get('value')
-            return jsonify(message = 'Updated successfully', replaced = True), 200
-        
-    # Add new key
-        if req:
-            d[keyname] = d.get(keyname, {})
-            d[keyname]['value'] = req.get('value')
-            return jsonify(message = 'Added successfully',replaced = False), 201
-        else:
-            return jsonify(error = 'Value is missing', message = 'Error in PUT'), 400
+
+    # Check if key already exists
+    if keyname in d:
+        d[keyname]['value'] = req.get('value')
+        return jsonify(message =  'Updated successfully',replaced=True), 200
+    
+ # Add new key
+    if req:
+        d[keyname] = d.get(keyname, {})
+        d[keyname]['value'] = req.get('value')
+        return jsonify(message = 'Added successfully',replaced=False), 201
     else:
-        forward_request(req, view[bin])
+        return jsonify(error = 'value is missing', message = 'Error in PUT'), 400
         
 # Get key    
 @app.route('/kv-store/keys/<keyname>', methods = ['GET'])
@@ -122,6 +118,7 @@ def getKeyCount():
 @app.route('/kv-store/view-change',methods=['PUT'])
 #perform a view change
 def viewChange():
+    global view
     req = request.get_json()
     new_view = req['view']
     #if we need to, notify all the other nodes of this view change
