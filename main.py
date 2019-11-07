@@ -53,7 +53,7 @@ def putKey(keyname):
     req = request.get_json()
     
     if view[bin] == ADDRESS:
-        if "value" not in req:
+        if not req or "value" not in req:
             return jsonify(error='value is missing', message='Error in PUT'), 400
 
         # Check if key already exists
