@@ -107,6 +107,10 @@ def getKeyCount():
 def get_view():
     return jsonify(view),200
 
+@app.route('/key-distribute', methods=['PUT'])
+def startDistribution():
+    return key_distribute(),200
+
 @app.route('/kv-store/view-change',methods=['PUT'])
 #perform a view change
 def viewChange():
@@ -118,14 +122,16 @@ def viewChange():
         for node in view:
             if node != ADDRESS:
                 forward_request(request, node)
-        requests.put(url="http://" + view[(view.index(ADDRESS) + 1) % len(view)] + "/key-distribute",
+        for node in view:
+            if node != ADDRESS:
+                requests.put(url="http://" + node + "/key-distribute",
                      headers={'from_node': ADDRESS})
         key_distribute()
         view_map = []
         count = 0
         for node in iter(view):
             try:
-                count = requests.get(node + "/kv-store/key-count")
+                count = requests.get(node + "/kv-store/key-count")['key-count']
             except Exception:
                 return "Node " + node + " did not respond to a request for its key count", 400
             view_map.append({"address": node, "key-count": count})
