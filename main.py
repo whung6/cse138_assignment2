@@ -109,12 +109,13 @@ def deleteKey(keyname):
 def getKeyCount():
     return jsonify({"message": "Key count retrieved successfully", "key-count": len(d)}), 200
 
+@app.route('/get-view', methods=['GET'])
+def get_view():
+    return jsonify(view),200
 
 @app.route('/kv-store/key-distribute', methods=['PUT'])
 def startDistribution():
-    if not key_distribute():
-        if view[(view.index(ADDRESS) + 1) % len(view)] != request.headers['from_node']:
-            forward_request(request, view[(view.index(ADDRESS) + 1) % len(view)])
+    return key_distribute(),200
 
 # Helper method to rehash and redistribute keys according to the new view
 # Returns either an error message detailing which node failed to accept their new key(s) or the string "ok"
@@ -125,14 +126,15 @@ def viewChange():
     global view
     req = request.get_json()
     new_view = req['view']
+    view = new_view.split(',')
     # if we need to, notify all the other nodes of this view change
     if 'from_node' not in request.headers:
         for node in view:
-            forward_request(request, node)
-    # parse the new view list
-    view = new_view.split(',')
-    if 'from_node' not in request.headers:
-        requests.put(url="http://" + view[(view.index(ADDRESS) + 1) % len(view)] + "/key-distribute",
+            if node != ADDRESS:
+                forward_request(request, node)
+        for node in view:
+            if node != ADDRESS:
+                    requests.put(url="http://" + node + "/key-distribute",
                      headers={'from_node': ADDRESS})
         key_distribute()
         view_map = []
@@ -144,6 +146,8 @@ def viewChange():
                 return "Node " + node + " did not respond to a request for its key count", 400
             view_map.append({"address": node, "key-count": count})
         return jsonify(message="View change successful", shards=view_map), 200
+    else:
+        return 200
 
 
 # helper method to rehash and redistribute keys according to the new view
@@ -160,7 +164,8 @@ def key_distribute():
                              data="{\"value\": \"" + d[key]['value'] + "\"}")
                 del d[key] # delete the key
             except Exception:
-                return jsonify(message="Node " + view[new_index] + " did not accept key " + key), 400
+                return "Node " + view[new_index] + " did not accept key " + key
+    return "ok"
 
 
 ##EXPERIMENTAL FEATURE
