@@ -113,7 +113,7 @@ def getKeyCount():
 def get_view():
     return jsonify(view),200
 
-@app.route('/kv-store/key-distribute', methods=['PUT'])
+@app.route('/key-distribute', methods=['PUT'])
 def startDistribution():
     return key_distribute(),200
 
