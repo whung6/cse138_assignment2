@@ -103,35 +103,35 @@ def getKeyCount():
     count = len(d)
     return jsonify(message="Key count retrieved successfully", name=count),200
 
+@app.route('/get-view', methods=['GET'])
+def get_view():
+    return jsonify(view),200
 
 @app.route('/kv-store/view-change',methods=['PUT'])
 #perform a view change
 def viewChange():
     req = request.get_json()
     new_view = req['view']
-    #if we need to, notify all the other nodes of this view change
-    if 'from_node' not in request.headers:
-        for node in iter(view):
-            try:
-                requests.put(node + "/kv-store/view-change", headers={'from_node': ADDRESS}, data=request.get_data())
-            except Exception:
-                return "node " + node + "did not respond to notification of view change"
-    #parse the new view list
     view = new_view.split(',')
-    #do the reshard
-    err = key_distribute()
-    if err != "ok":
-        return jsonify(message="Error in PUT",error=err)
-    else:
+    # if we need to, notify all the other nodes of this view change
+    if 'from_node' not in request.headers:
+        for node in view:
+            if node != ADDRESS:
+                forward_request(request, node)
+        requests.put(url="http://" + view[(view.index(ADDRESS) + 1) % len(view)] + "/key-distribute",
+                     headers={'from_node': ADDRESS})
+        key_distribute()
         view_map = []
         count = 0
         for node in iter(view):
             try:
                 count = requests.get(node + "/kv-store/key-count")
             except Exception:
-                return "node " + node + " did not respond to a request for its key count"
-            view_map.append({address: node, key-count: count})
-        return jsonify(message="View change successful", shards = view_map)
+                return "Node " + node + " did not respond to a request for its key count", 400
+            view_map.append({"address": node, "key-count": count})
+        return jsonify(message="View change successful", shards=view_map), 200
+    else:
+        return "ok",200
 
 
 #helper method to rehash and redistribute keys according to the new view
