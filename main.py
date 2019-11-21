@@ -18,7 +18,7 @@ d = {}
 ADDRESS = ""
 
 # the vector clock index in context, add 1 if used as ID
-# len(view) % repl_factor
+# view.index(ADDRESS) % repl_factor
 keyhard_ID = 0
 
 # the column of this node in the vector clock
