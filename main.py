@@ -7,6 +7,7 @@ import json
 import sys
 # flask's request isn't for sending request to other sites
 import requests
+import math
 
 app = Flask(__name__)
 
@@ -16,8 +17,56 @@ d = {}
 # Node's address
 ADDRESS = ""
 
+# the vector clock index in context, add 1 if used as ID
+# len(view) % repl_factor
+keyhard_ID = 0
+
+# the column of this node in the vector clock
+# math.floor((view.index(ADDRESS) + 1) / repl_factor) - 1
+# need to set to 0 if repl_factor = 1
+node_ID = 0
+
+# causal context
+# when giving context back to the client, only modify one keyshard
+# leave the other keyshards untouched
+context = []
+
+# replica factor
+repl_factor = 1
+
 # Current view
 view = []
+
+
+# creates a 2D array of 0's with size [keyshards][repl_factor]
+# keyshards = number of nodes / repl_factor = number of keyshards
+def initialize_context():
+    return [[0 for x in range(len(view) / repl_factor)] for y in repl_factor]
+
+
+# is own context > than the compared context
+def isOwnContextLarger(context2):
+    for index in range(len(context2[keyshard_ID])):
+        if context[keyshard_ID][index] < context2[keyshard_ID][index]:
+            return False
+    return True
+
+
+def updateVectorClock():
+    context[keyshard_ID][node_ID] = context[keyshard_ID][node_ID] + 1
+
+
+# compare against own context
+def isContextConcurrent(context2):
+    has_smaller, has_larger = False, False
+    for index in range(len(context2[keyshard_ID])):
+        if context[keyshard_ID][index] < context2[keyshard_ID][index]:
+            has_smaller = True
+        elif context[keyshard_ID][index] > context2[keyshard_ID][index]:
+            has_larger = True
+    return has_smaller and has_larger
+# if it's not larger and not concurrent, it's smaller
+
 
 ##EXPERIMENTAL FEATURE:
 #using xor-distance rather than modulo to distribute keys
@@ -206,4 +255,6 @@ if __name__ == "__main__":
     app.debug = True
     ADDRESS = sys.argv[1]
     view = sys.argv[2].split(',')
+    keyshard_ID = view.index(ADDRESS)  # initialized to its index for post @188
+    initialize_context()
     app.run(host='0.0.0.0', port=13800)
