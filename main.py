@@ -17,13 +17,12 @@ d = {}
 # Node's address
 ADDRESS = ""
 
-# the vector clock index in context, add 1 if used as ID
-# view.index(ADDRESS) + 1 % repl_factor
-keyhard_ID = 0
+# the vector clock index in context, add 1 if used as keyshard ID
+# view.index(ADDRESS) % (len(view) / repl_factor)
+keyshard_ID = 0
 
 # the column of this node in the vector clock
-# math.floor((view.index(ADDRESS) + 1) / repl_factor) - 1
-# need to manually set to 0 if repl_factor = 1
+# math.ceiling((view.index(ADDRESS) + 1) / (len(view) / repl_factor)) - 1
 node_ID = 0
 
 # causal context
@@ -40,6 +39,8 @@ view = []
 
 # creates a 2D array of 0's with size [keyshards][repl_factor]
 # keyshards = number of nodes / repl_factor = number of keyshards
+# the vector clock for this keyshard is context[keyshard_ID]
+# the lamport clock of this node is context[keyshard_ID][node_ID]
 def initialize_context():
     return [[0 for x in range(len(view) / repl_factor)] for y in repl_factor]
 
@@ -255,6 +256,7 @@ if __name__ == "__main__":
     app.debug = True
     ADDRESS = sys.argv[1]
     view = sys.argv[2].split(',')
-    keyshard_ID = view.index(ADDRESS)  # initialized to its index for post @188
+    keyshard_ID = view.index(ADDRESS) % (len(view) / repl_factor)  # initialized to its index for post @188
+    node_ID = math.ceiling((view.index(ADDRESS) + 1) / (len(view) / repl_factor)) - 1
     initialize_context()
     app.run(host='0.0.0.0', port=13800)
