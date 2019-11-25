@@ -112,7 +112,7 @@ def default():
 # Insert and update key
 @app.route('/kv-store/keys/<keyname>', methods=['PUT'])
 def putKey(keyname):
-    bin = hash(keyname) % len(view)
+    shard_id = hash(keyname) % len(shards)
 
     # Check if keyname over 50 characters
     if len(keyname) > 50:
@@ -121,30 +121,30 @@ def putKey(keyname):
     # Get request
     req = request.get_json()
     
-    if view[bin] == ADDRESS:
+    if ADDRESS in shards[shard_id]:
         if not req or "value" not in req:
             return jsonify(error='value is missing', message='Error in PUT'), 400
 
         # Check if key already exists
         if keyname in d:
             d[keyname]['value'] = req.get('value')
+            #gossip()
             return jsonify(message='Updated successfully', replaced=True), 200
         # Add new key
         else:
             d[keyname] = {}
             d[keyname]['value'] = req.get('value')
+            #gossip()
             return jsonify(message='Added successfully', replaced=False), 200
     else:
-        return forward_request(request, view[bin])
+        return forward_request(request, get_shard_rep(keyname))
 
 # Get key    
 @app.route('/kv-store/keys/<keyname>', methods=['GET'])
 def getKey(keyname):
-    bin = hash(keyname) % len(view) 
-    # Check if key already exists
-
     if keyname in d:
         payload = {"doesExist": True, "message": 'Retrieved successfully', "value": d[keyname]['value']}
+        #gossip()
         # If it's not directly from client, add the correct address
         if 'from_node' in request.headers:
             payload['address'] = ADDRESS
@@ -154,7 +154,7 @@ def getKey(keyname):
             return jsonify(doesExist= False, error='Key does not exist', message='Error in GET'), 404
         # otherwise forward it to the right node
         else:
-            return forward_request(request, view[bin])
+            return forward_request(request, get_shard_rep(keyname))
         
 # Get shard (replicas not yet implemented)
 @app.route('/kv-store/shards/<id>', methods=['GET'])
@@ -177,19 +177,21 @@ def getShard(id):
 # Delete key    
 @app.route('/kv-store/keys/<keyname>', methods=['DELETE'])
 def deleteKey(keyname):
-    bin = hash(keyname) % len(view) 
+    bin = hash(keyname) % len(shards) 
     
     if keyname in d:
         del d[keyname]
+        for fellow in shards[keyshard_ID]:
+            forward_request(request,fellow) #forward the deletion to everyone in the shard
         payload = {'doesExist': True, 'message': 'Deleted successfully'}
-        if 'from_node':
+        if 'from_node' in request.headers:
             payload['address'] = ADDRESS
         return jsonify(payload), 200
     else:
         if 'from_node' in request.headers:  # just need to check if there is a from_node header
             return jsonify(doesExist=False, error='Key does not exist', message='Error in DELETE'), 404
         else:
-            return forward_request(request, view[bin])
+            return forward_request(request, get_shard_rep(keyname))
 
 # Get key count
 @app.route('/kv-store/key-count', methods=['GET'])
@@ -214,6 +216,8 @@ def viewChange():
     req = request.get_json()
     new_view = req['view']
     view = new_view.split(',')
+    #update shard info
+    shards = build_shard_table(view,repl_factor)
     # if we need to, notify all the other nodes of this view change
     if 'from_node' not in request.headers:
         for node in view:
@@ -242,18 +246,23 @@ def viewChange():
 # this method tries to do everything in order, rather than broadcasting
 def key_distribute():
     for key in list(d.keys()):
-        new_index = hash(key) % len(view) 
+        new_index = hash(key) % len(shards) 
         # If the key no longer belongs here, send it where it belongs
-        if new_index != view.index(ADDRESS): 
-            try:
-                requests.put(url="http://" + view[new_index] + "/kv-store/keys/" + key,
-                             headers={'from_node': ADDRESS, "Content-Type": "application/json"},
-                             data="{\"value\": \"" + d[key]['value'] + "\"}")
-                del d[key] # delete the key
-            except Exception:
-                return "Node " + view[new_index] + " did not accept key " + key
+        if new_index != keyshard_ID:
+            did_send = False
+            for shard_rep in shards[new_index]: #try sending the value to different shard reps until we get an OK
+                try:
+                    requests.put(url="http://" + shard_rep + "/kv-store/keys/" + key,
+                                 headers={'from_node': ADDRESS, "Content-Type": "application/json"},
+                                 data="{\"value\": \"" + d[key]['value'] + "\"}")
+                    del d[key] # delete the key
+                    did_send = True
+                    break
+                except Exception:
+                    continue
+            if not did_send:
+                return "No representative of shard " + new_index + " accepted key" + key
     return "ok"
-
 
 ##EXPERIMENTAL FEATURE
 # does the same thing as the above method, but adapted for xordist
