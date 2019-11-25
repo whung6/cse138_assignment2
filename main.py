@@ -7,6 +7,8 @@ import json
 import sys
 # flask's request isn't for sending request to other sites
 import requests
+import math
+import random
 
 app = Flask(__name__)
 
@@ -16,8 +18,75 @@ d = {}
 # Node's address
 ADDRESS = ""
 
+# the vector clock index in context, add 1 if used as keyshard ID
+# view.index(ADDRESS) % (len(view) / repl_factor)
+keyshard_ID = 0
+
+# the column of this node in the vector clock
+# math.ceiling((view.index(ADDRESS) + 1) / (len(view) / repl_factor)) - 1
+node_ID = 0
+
+# causal context
+# when giving context back to the client, only modify one keyshard
+# leave the other keyshards untouched
+context = []
+
+# replica factor
+repl_factor = 1
+
 # Current view
 view = []
+
+#shard info
+shards = []
+
+
+# creates a 2D array of 0's with size [keyshards][repl_factor]
+# keyshards = number of nodes / repl_factor = number of keyshards
+# the vector clock for this keyshard is context[keyshard_ID]
+# the lamport clock of this node is context[keyshard_ID][node_ID]
+def initialize_context():
+    #return [[0 for x in range(len(view) / repl_factor)] for y in repl_factor]
+    return 0
+
+
+# is own context > than the compared context
+def isOwnContextLarger(context2):
+    for index in range(len(context2[keyshard_ID])):
+        if context[keyshard_ID][index] < context2[keyshard_ID][index]:
+            return False
+    return True
+
+
+def updateVectorClock():
+    context[keyshard_ID][node_ID] = context[keyshard_ID][node_ID] + 1
+
+
+# compare against own context
+def isContextConcurrent(context2):
+    has_smaller, has_larger = False, False
+    for index in range(len(context2[keyshard_ID])):
+        if context[keyshard_ID][index] < context2[keyshard_ID][index]:
+            has_smaller = True
+        elif context[keyshard_ID][index] > context2[keyshard_ID][index]:
+            has_larger = True
+    return has_smaller and has_larger
+# if it's not larger and not concurrent, it's smaller
+
+#builds a map of the network(shard info) based on view
+#shards[i] is a list of addresses mapped to that shard
+#calculate which shard a particular key is in by hash(key) % len(shards)
+#note: this is a pure function and does _not_ set shards, use its output
+def build_shard_table(v,n_shards):
+    s = [] #return value
+    for i in range(0,len(v),n_shards):
+        s[i] = v[i:i+n_shards] #just smush each block of n_shards nodes into the thing. Since views are always in the same order this works.
+    return s
+
+#returns a random representative from the shard that this key belongs to
+def get_shard_rep(key):
+    return random.choice(shards[hash(key) % len(shards)])
+
 
 ##EXPERIMENTAL FEATURE:
 #using xor-distance rather than modulo to distribute keys
@@ -86,6 +155,24 @@ def getKey(keyname):
         # otherwise forward it to the right node
         else:
             return forward_request(request, view[bin])
+        
+# Get shard (replicas not yet implemented)
+@app.route('/kv-store/shards/<id>', methods=['GET'])
+def getShard(id):
+     
+    bin = int(id)  
+    if bin < 0 or bin >= len(view):
+        return jsonify({"message": "Node does not exist"})
+    
+    if view[bin] == ADDRESS:
+        return jsonify({"message": 'Shard information retrieved successfully', "shard-id": bin, "key-count": len(d), "causal-context": '{}', "replicas": '{}'}) 
+    else:
+        return forward_request(request, view[bin])
+
+# Get all shards
+#@app.route('/kv-store/shards', methods=['GET'])
+#def getAllShards():
+    
 
 # Delete key    
 @app.route('/kv-store/keys/<keyname>', methods=['DELETE'])
@@ -206,4 +293,7 @@ if __name__ == "__main__":
     app.debug = True
     ADDRESS = sys.argv[1]
     view = sys.argv[2].split(',')
+    keyshard_ID = view.index(ADDRESS) % (len(view) / repl_factor)  # initialized to its index for post @188
+    node_ID = math.ceil((view.index(ADDRESS) + 1) / (len(view) / repl_factor)) - 1
+    initialize_context()
     app.run(host='0.0.0.0', port=13800)
