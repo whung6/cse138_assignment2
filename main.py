@@ -113,9 +113,6 @@ def derp():
 @app.route('/kv-store/keys/<keyname>', methods=['PUT'])
 def putKey(keyname):
     bin = hash(keyname) % int(len(view) / repl_factor)
-    print(node_ID)
-    print(keyshard_ID)
-    print(context)
     updateVectorClock()
     # Check if keyname over 50 characters
     if len(keyname) > 50:
@@ -225,6 +222,7 @@ def aaaa():
 @app.route('/gossip', methods=['PUT'])
 def periodicGossipReceived():
     log = request.get_json()
+    clock = context
     for entry in log:
         if entry[2] in d.keys():
             if areContextLarger(entry[0], d[entry[2]]['context']):
@@ -246,7 +244,7 @@ def periodicGossipReceived():
             d[entry[2]]['context'] = entry[0]
 
         clock = entry[0]
-    requests.put(url=request.host + "/gossip/" + view.index(ADDRESS),
+    requests.put(url="http://" +request.host + "/ack/" + str(view.index(ADDRESS)),
                  headers={'from_node': ADDRESS, "Content-Type": "application/json"},
                  data=json.dumps({"updated_clock": clock}))
 
@@ -343,12 +341,12 @@ def forward_request(request, node):
     except Exception:
         return jsonify(error='Node ' + node + " is down", message='Error in ' + request.method), 503
 
-
+@app.route('/sendGossip', methods=['GET'])
 def periodicGossip():
     while True:
         for index in range(keyshard_ID, len(view), int(len(view) / repl_factor)):
             if view[index] != ADDRESS:
-                requests.put(url=view[index] + "/gossip",
+                requests.put(url="http://" + view[index] + "/gossip",
                              headers={'from_node': ADDRESS, "Content-Type": "application/json"},
                              data=json.dumps(event_log))
             time.sleep(10)
@@ -363,7 +361,7 @@ if __name__ == "__main__":
     # gossipThread.setDaemon(True)
     # gossipThread.start()
     keyshard_ID = int(view.index(ADDRESS) % (len(view) / repl_factor))  # initialized to its index for post @188
-    node_ID = math.ceil((view.index(ADDRESS) + 1) / (len(view) / repl_factor)) - 1
+    node_ID = int(math.ceil((view.index(ADDRESS) + 1) / (len(view) / repl_factor)) - 1)
     context = initialize_context()
-    app.run(host='0.0.0.0', port=13802)
+    app.run(host='0.0.0.0', port=13800)
 
