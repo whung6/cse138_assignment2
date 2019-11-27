@@ -7,6 +7,7 @@ import json
 import sys
 # flask's request isn't for sending request to other sites
 import requests
+import time
 import math
 
 app = Flask(__name__)
@@ -33,6 +34,15 @@ context = []
 # replica factor
 repl_factor = 1
 
+# add to this event log for write/del
+# the event is a list
+# format goes [context[keyshard_ID], 'PUT/DEL', 'key', 'value (leave blank if del)']
+event_log = []
+
+# acks = a record of which node got which gossip, so we don't have to send a huge list of event_log every time
+# key is the index of the other node
+acks = {}
+
 # Current view
 view = []
 
@@ -42,13 +52,13 @@ view = []
 # the vector clock for this keyshard is context[keyshard_ID]
 # the lamport clock of this node is context[keyshard_ID][node_ID]
 def initialize_context():
-    return [[0 for x in range(len(view) / repl_factor)] for y in repl_factor]
+    return [[0 for _ in range(repl_factor)] for _ in range(int(len(view) / repl_factor))]
 
 
-# is own context > than the compared context
-def isOwnContextLarger(context2):
+# is context1 > than the compared context
+def areContextLarger(context1, context2):
     for index in range(len(context2[keyshard_ID])):
-        if context[keyshard_ID][index] < context2[keyshard_ID][index]:
+        if context1[keyshard_ID][index] < context2[keyshard_ID][index]:
             return False
     return True
 
@@ -57,30 +67,33 @@ def updateVectorClock():
     context[keyshard_ID][node_ID] = context[keyshard_ID][node_ID] + 1
 
 
-# compare against own context
-def isContextConcurrent(context2):
+# compare 2 context
+def areContextConcurrent(context1, context2):
     has_smaller, has_larger = False, False
     for index in range(len(context2[keyshard_ID])):
-        if context[keyshard_ID][index] < context2[keyshard_ID][index]:
+        if context1[keyshard_ID][index] < context2[keyshard_ID][index]:
             has_smaller = True
-        elif context[keyshard_ID][index] > context2[keyshard_ID][index]:
+        elif context1[keyshard_ID][index] > context2[keyshard_ID][index]:
             has_larger = True
     return has_smaller and has_larger
+
+
 # if it's not larger and not concurrent, it's smaller
 
 
 ##EXPERIMENTAL FEATURE:
-#using xor-distance rather than modulo to distribute keys
-#this is a drop-in replacement. Simply replace every use of view[hash(key) % len(view)] with xordist_get_addr(key)
-#advantages: resharading does not require as many keys to change location during a reshard
-#advantages: lookup is O(n) in the number of nodes rather than constant-time... but for n < 10,000 this is still practically nothing
+# using xor-distance rather than modulo to distribute keys
+# this is a drop-in replacement. Simply replace every use of view[hash(key) % len(view)] with xordist_get_addr(key)
+# advantages: resharading does not require as many keys to change location during a reshard
+# advantages: lookup is O(n) in the number of nodes rather than constant-time... but for n < 10,000 this is still practically nothing
 def xordist_get_addr(key):
     key_hash = hash(key)
-    dist_min = hash(ADDRESS)^key_hash
+    dist_min = hash(ADDRESS) ^ key_hash
     addr_min = ADDRESS
-    for node in iter(view): #find the minimum of distances(measured with XOR) between the hash of the address and the hash of the key
-        if hash(node)^key_hash < dist_min:
-            dist_min = hash(node)^key_hash
+    for node in iter(
+            view):  # find the minimum of distances(measured with XOR) between the hash of the address and the hash of the key
+        if hash(node) ^ key_hash < dist_min:
+            dist_min = hash(node) ^ key_hash
             addr_min = node
     return addr_min
 
@@ -90,18 +103,27 @@ def default():
     return "CSE 138 Lab 2."
 
 
+@app.route('/derp', methods=['GET'])
+def derp():
+    return str(context) + " " + str(node_ID) + " " + str(keyshard_ID) + " " + str(
+        len(view) / repl_factor + 1) + " " + str(repl_factor + 1) + " " + str(view) + " " + str(repl_factor)
+
+
 # Insert and update key
 @app.route('/kv-store/keys/<keyname>', methods=['PUT'])
 def putKey(keyname):
-    bin = hash(keyname) % len(view)
-
+    bin = hash(keyname) % int(len(view) / repl_factor)
+    print(node_ID)
+    print(keyshard_ID)
+    print(context)
+    updateVectorClock()
     # Check if keyname over 50 characters
     if len(keyname) > 50:
         return jsonify(error='Key is too long ', message='Error in PUT'), 201
-        
+
     # Get request
     req = request.get_json()
-    
+
     if view[bin] == ADDRESS:
         if not req or "value" not in req:
             return jsonify(error='value is missing', message='Error in PUT'), 400
@@ -109,19 +131,22 @@ def putKey(keyname):
         # Check if key already exists
         if keyname in d:
             d[keyname]['value'] = req.get('value')
+            d[keyname]['context'] = context[keyshard_ID]
             return jsonify(message='Updated successfully', replaced=True), 200
         # Add new key
         else:
             d[keyname] = {}
             d[keyname]['value'] = req.get('value')
+            d[keyname]['context'] = context[keyshard_ID]
             return jsonify(message='Added successfully', replaced=False), 200
     else:
         return forward_request(request, view[bin])
 
-# Get key    
+
+# Get key
 @app.route('/kv-store/keys/<keyname>', methods=['GET'])
 def getKey(keyname):
-    bin = hash(keyname) % len(view) 
+    bin = hash(keyname) % len(view)
     # Check if key already exists
 
     if keyname in d:
@@ -132,16 +157,36 @@ def getKey(keyname):
         return jsonify(payload), 200
     else:
         if 'from_node' in request.headers:
-            return jsonify(doesExist= False, error='Key does not exist', message='Error in GET'), 404
+            return jsonify(doesExist=False, error='Key does not exist', message='Error in GET'), 404
         # otherwise forward it to the right node
         else:
             return forward_request(request, view[bin])
 
-# Delete key    
+
+# Get shard (replicas not yet implemented)
+@app.route('/kv-store/shards/<id>', methods=['GET'])
+def getShard(id):
+    bin = int(id)
+    if bin < 0 or bin >= len(view):
+        return jsonify({"message": "Node does not exist"})
+
+    if view[bin] == ADDRESS:
+        return jsonify({"message": 'Shard information retrieved successfully', "shard-id": bin, "key-count": len(d),
+                        "causal-context": '{}', "replicas": '{}'})
+    else:
+        return forward_request(request, view[bin])
+
+
+# Get all shards
+# @app.route('/kv-store/shards', methods=['GET'])
+# def getAllShards():
+
+
+# Delete key
 @app.route('/kv-store/keys/<keyname>', methods=['DELETE'])
 def deleteKey(keyname):
-    bin = hash(keyname) % len(view) 
-    
+    bin = hash(keyname) % len(view)
+
     if keyname in d:
         del d[keyname]
         payload = {'doesExist': True, 'message': 'Deleted successfully'}
@@ -154,18 +199,64 @@ def deleteKey(keyname):
         else:
             return forward_request(request, view[bin])
 
+
 # Get key count
 @app.route('/kv-store/key-count', methods=['GET'])
 def getKeyCount():
     return jsonify({"message": "Key count retrieved successfully", "key-count": len(d)}), 200
 
+
 @app.route('/get-view', methods=['GET'])
 def get_view():
-    return jsonify(view),200
+    return jsonify(view), 200
+
 
 @app.route('/key-distribute', methods=['PUT'])
 def startDistribution():
-    return key_distribute(),200
+    return key_distribute(), 200
+
+
+@app.route('/dict', methods=['GET'])
+def aaaa():
+    return json.dumps(d)
+
+
+# periodic gossip receiving end
+@app.route('/gossip', methods=['PUT'])
+def periodicGossipReceived():
+    log = request.get_json()
+    for entry in log:
+        if entry[2] in d.keys():
+            if areContextLarger(entry[0], d[entry[2]]['context']):
+                d[entry[2]]['value'] = entry[3]
+                d[entry[2]]['context'] = entry[0]
+            elif areContextConcurrent(entry[0], d[entry[2]]['context']):
+                replace = False
+                for index in range(len(entry[0])):
+                    if entry[0][index] > d[entry[2]]['context'][index]:
+                        replace = True
+                        break
+                    elif entry[0][index] < d[entry[2]]['context'][index]:
+                        break
+                if replace:
+                    d[entry[2]]['value'] = entry[3]
+                    d[entry[2]]['context'] = entry[0]
+        else:
+            d[entry[2]]['value'] = entry[3]
+            d[entry[2]]['context'] = entry[0]
+
+        clock = entry[0]
+    requests.put(url=request.host + "/gossip/" + view.index(ADDRESS),
+                 headers={'from_node': ADDRESS, "Content-Type": "application/json"},
+                 data=json.dumps({"updated_clock": clock}))
+
+
+# acks of periodic gossip
+# index is the index of the sender in view, because I'm lazy
+@app.route('/ack/<index>', methods=['PUT'])
+def ackReceived(index):
+    acks[index] = request.get_json()['updated_clock']
+
 
 # Helper method to rehash and redistribute keys according to the new view
 # Returns either an error message detailing which node failed to accept their new key(s) or the string "ok"
@@ -185,7 +276,7 @@ def viewChange():
         for node in view:
             if node != ADDRESS:
                 requests.put(url="http://" + node + "/key-distribute",
-                     headers={'from_node': ADDRESS})
+                             headers={'from_node': ADDRESS})
         key_distribute()
         view_map = []
         for node in view:
@@ -197,7 +288,7 @@ def viewChange():
             view_map.append({"address": node, "key-count": count})
         return jsonify(message="View change successful", shards=view_map), 200
     else:
-        return "ok",200
+        return "ok", 200
 
 
 # helper method to rehash and redistribute keys according to the new view
@@ -205,14 +296,14 @@ def viewChange():
 # this method tries to do everything in order, rather than broadcasting
 def key_distribute():
     for key in list(d.keys()):
-        new_index = hash(key) % len(view) 
+        new_index = hash(key) % len(view)
         # If the key no longer belongs here, send it where it belongs
-        if new_index != view.index(ADDRESS): 
+        if new_index != view.index(ADDRESS):
             try:
                 requests.put(url="http://" + view[new_index] + "/kv-store/keys/" + key,
                              headers={'from_node': ADDRESS, "Content-Type": "application/json"},
                              data="{\"value\": \"" + d[key]['value'] + "\"}")
-                del d[key] # delete the key
+                del d[key]  # delete the key
             except Exception:
                 return "Node " + view[new_index] + " did not accept key " + key
     return "ok"
@@ -223,10 +314,11 @@ def key_distribute():
 def xordist_key_distribute():
     for key in iter(d):
         new_addr = xordist_get_addr(key)
-        if new_addr != ADDRESS: #if the key no longer belongs here, send it where it belongs
+        if new_addr != ADDRESS:  # if the key no longer belongs here, send it where it belongs
             try:
-                requests.put(new_addr + "/kv-store/keys/" + key, headers={'from_node': ADDRESS}, data = jsonify({value: d[key]}))
-                del d[key] #delete the key
+                requests.put(new_addr + "/kv-store/keys/" + key, headers={'from_node': ADDRESS},
+                             data=jsonify({value: d[key]}))
+                del d[key]  # delete the key
             except Exception:
                 return Exception
     return "ok"
@@ -252,11 +344,26 @@ def forward_request(request, node):
         return jsonify(error='Node ' + node + " is down", message='Error in ' + request.method), 503
 
 
+def periodicGossip():
+    while True:
+        for index in range(keyshard_ID, len(view), int(len(view) / repl_factor)):
+            if view[index] != ADDRESS:
+                requests.put(url=view[index] + "/gossip",
+                             headers={'from_node': ADDRESS, "Content-Type": "application/json"},
+                             data=json.dumps(event_log))
+            time.sleep(10)
+
+
 if __name__ == "__main__":
     app.debug = True
     ADDRESS = sys.argv[1]
     view = sys.argv[2].split(',')
-    keyshard_ID = view.index(ADDRESS) % (len(view) / repl_factor)  # initialized to its index for post @188
-    node_ID = math.ceiling((view.index(ADDRESS) + 1) / (len(view) / repl_factor)) - 1
-    initialize_context()
-    app.run(host='0.0.0.0', port=13800)
+    repl_factor = int(sys.argv[3])
+    # gossipThread = threading.Thread(target=periodicGossip)
+    # gossipThread.setDaemon(True)
+    # gossipThread.start()
+    keyshard_ID = int(view.index(ADDRESS) % (len(view) / repl_factor))  # initialized to its index for post @188
+    node_ID = math.ceil((view.index(ADDRESS) + 1) / (len(view) / repl_factor)) - 1
+    context = initialize_context()
+    app.run(host='0.0.0.0', port=13802)
+
