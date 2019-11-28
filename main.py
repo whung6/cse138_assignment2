@@ -1,14 +1,14 @@
 from flask import Flask
 from flask import jsonify
 from flask import request
-import os
-import socket
 import json
 import sys
 # flask's request isn't for sending request to other sites
 import requests
-import time
 import math
+from flask_apscheduler import APScheduler
+
+
 
 app = Flask(__name__)
 
@@ -57,8 +57,8 @@ def initialize_context():
 
 # is context1 > than the compared context
 def areContextLarger(context1, context2):
-    for index in range(len(context2[keyshard_ID])):
-        if context1[keyshard_ID][index] < context2[keyshard_ID][index]:
+    for index in range(len(context2)):
+        if context1[index] < context2[index]:
             return False
     return True
 
@@ -70,10 +70,10 @@ def updateVectorClock():
 # compare 2 context
 def areContextConcurrent(context1, context2):
     has_smaller, has_larger = False, False
-    for index in range(len(context2[keyshard_ID])):
-        if context1[keyshard_ID][index] < context2[keyshard_ID][index]:
+    for index in range(len(context2)):
+        if context1[index] < context2[index]:
             has_smaller = True
-        elif context1[keyshard_ID][index] > context2[keyshard_ID][index]:
+        elif context1[index] > context2[index]:
             has_larger = True
     return has_smaller and has_larger
 
@@ -102,18 +102,10 @@ def xordist_get_addr(key):
 def default():
     return "CSE 138 Lab 2."
 
-
-@app.route('/derp', methods=['GET'])
-def derp():
-    return str(context) + " " + str(node_ID) + " " + str(keyshard_ID) + " " + str(
-        len(view) / repl_factor + 1) + " " + str(repl_factor + 1) + " " + str(view) + " " + str(repl_factor)
-
-
 # Insert and update key
 @app.route('/kv-store/keys/<keyname>', methods=['PUT'])
 def putKey(keyname):
     bin = hash(keyname) % int(len(view) / repl_factor)
-    updateVectorClock()
     # Check if keyname over 50 characters
     if len(keyname) > 50:
         return jsonify(error='Key is too long ', message='Error in PUT'), 201
@@ -122,6 +114,8 @@ def putKey(keyname):
     req = request.get_json()
 
     if view[bin] == ADDRESS:
+        updateVectorClock()
+        event_log.append([context[keyshard_ID], 'PUT', keyname, req.get('value')])
         if not req or "value" not in req:
             return jsonify(error='value is missing', message='Error in PUT'), 400
 
@@ -136,8 +130,10 @@ def putKey(keyname):
             d[keyname]['value'] = req.get('value')
             d[keyname]['context'] = context[keyshard_ID]
             return jsonify(message='Added successfully', replaced=False), 200
+
     else:
         return forward_request(request, view[bin])
+
 
 
 # Get key
@@ -213,47 +209,46 @@ def startDistribution():
     return key_distribute(), 200
 
 
-@app.route('/dict', methods=['GET'])
-def aaaa():
-    return json.dumps(d)
-
-
 # periodic gossip receiving end
+# need to polish
 @app.route('/gossip', methods=['PUT'])
 def periodicGossipReceived():
     log = request.get_json()
     clock = context
     for entry in log:
         if entry[2] in d.keys():
-            if areContextLarger(entry[0], d[entry[2]]['context']):
-                d[entry[2]]['value'] = entry[3]
-                d[entry[2]]['context'] = entry[0]
-            elif areContextConcurrent(entry[0], d[entry[2]]['context']):
-                replace = False
-                for index in range(len(entry[0])):
-                    if entry[0][index] > d[entry[2]]['context'][index]:
-                        replace = True
-                        break
-                    elif entry[0][index] < d[entry[2]]['context'][index]:
-                        break
-                if replace:
-                    d[entry[2]]['value'] = entry[3]
-                    d[entry[2]]['context'] = entry[0]
+            tempContext = d[entry[2]]['context']
         else:
+            tempContext = context[keyshard_ID]
+        if areContextLarger(entry[0], tempContext):
+            d[entry[2]] = {}
             d[entry[2]]['value'] = entry[3]
             d[entry[2]]['context'] = entry[0]
-
+        elif areContextConcurrent(entry[0], tempContext):
+            replace = False
+            for index in range(len(entry[0])):
+                if entry[0][index] > d[entry[2]]['context'][index]:
+                    replace = True
+                    break
+                elif entry[0][index] < d[entry[2]]['context'][index]:
+                    break
+            if replace:
+                d[entry[2]] = {}
+                d[entry[2]]['value'] = entry[3]
+                d[entry[2]]['context'] = entry[0]
         clock = entry[0]
-    requests.put(url="http://" +request.host + "/ack/" + str(view.index(ADDRESS)),
+    requests.put(url="http://" + request.headers['from_node'] + "/ack/" + str(view.index(ADDRESS)),
                  headers={'from_node': ADDRESS, "Content-Type": "application/json"},
                  data=json.dumps({"updated_clock": clock}))
+    return ""
 
 
 # acks of periodic gossip
 # index is the index of the sender in view, because I'm lazy
 @app.route('/ack/<index>', methods=['PUT'])
 def ackReceived(index):
-    acks[index] = request.get_json()['updated_clock']
+    acks[str(index)] = request.get_json()['updated_clock']
+    return ""
 
 
 # Helper method to rehash and redistribute keys according to the new view
@@ -341,15 +336,20 @@ def forward_request(request, node):
     except Exception:
         return jsonify(error='Node ' + node + " is down", message='Error in ' + request.method), 503
 
-@app.route('/sendGossip', methods=['GET'])
+@app.before_first_request
+def before_first_request():
+    scheduler = APScheduler()
+    scheduler.init_app(app)
+    app.apscheduler.add_job(func=periodicGossip, trigger='interval', seconds=10, id='0')
+    scheduler.start()
+
 def periodicGossip():
-    while True:
-        for index in range(keyshard_ID, len(view), int(len(view) / repl_factor)):
-            if view[index] != ADDRESS:
-                requests.put(url="http://" + view[index] + "/gossip",
-                             headers={'from_node': ADDRESS, "Content-Type": "application/json"},
-                             data=json.dumps(event_log))
-            time.sleep(10)
+    temp = view.index(ADDRESS)
+    for index in range(keyshard_ID, len(view), int(len(view) / repl_factor)):
+        if index != temp:
+            requests.put(url="http://" + view[index] + "/gossip",
+                         headers={'from_node': ADDRESS, "Content-Type": "application/json"},
+                         data=json.dumps(event_log))
 
 
 if __name__ == "__main__":
@@ -357,9 +357,6 @@ if __name__ == "__main__":
     ADDRESS = sys.argv[1]
     view = sys.argv[2].split(',')
     repl_factor = int(sys.argv[3])
-    # gossipThread = threading.Thread(target=periodicGossip)
-    # gossipThread.setDaemon(True)
-    # gossipThread.start()
     keyshard_ID = int(view.index(ADDRESS) % (len(view) / repl_factor))  # initialized to its index for post @188
     node_ID = int(math.ceil((view.index(ADDRESS) + 1) / (len(view) / repl_factor)) - 1)
     context = initialize_context()
