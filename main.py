@@ -70,7 +70,6 @@ def areContextLarger(context1, context2):
 def updateVectorClock():
     context[keyshard_ID][node_ID] = context[keyshard_ID][node_ID] + 1
 
-
 # compare 2 context
 def areContextConcurrent(context1, context2):
     has_smaller, has_larger = False, False
@@ -120,7 +119,7 @@ def putKey(keyname):
     if bin == keyshard_ID:
         updateVectorClock()
         event_counter = event_counter + 1
-        event_log.append([copy.deepcopy(context[keyshard_ID]), 'PUT', keyname, req.get('value'), event_counter])
+        event_log.append([copy.deepcopy(context[keyshard_ID]), 'PUT', keyname, event_counter, req.get('value')])
         if not req or "value" not in req:
             return jsonify(error='value is missing', message='Error in PUT'), 400
 
@@ -134,6 +133,7 @@ def putKey(keyname):
             d[keyname] = {}
             d[keyname]['value'] = req.get('value')
             d[keyname]['context'] = copy.deepcopy(context[keyshard_ID])
+            d[keyname]['exist'] = True
             return jsonify(message='Added successfully', replaced=False), 200
 
     else:
@@ -161,7 +161,7 @@ def getKey(keyname):
                 continue
             elif areContextConcurrent(entry[0], tempContext):
                 continue
-            else
+            else:
                 isUpdated = False
                 break
         
@@ -209,19 +209,31 @@ def getAllShards():
 # Delete key
 @app.route('/kv-store/keys/<keyname>', methods=['DELETE'])
 def deleteKey(keyname):
-    bin = hash(keyname) % len(view)
+    bin = hash(keyname) % int(len(view) / repl_factor)
+    # Get request
+    req = request.get_json()
+    tempContext = req['causal-context']
+    # client doesn't have a context or client's context is outdated for the current view
+    if tempContext == '' or len(tempContext) != len(context) or len(tempContext[0]) != len(context[0]):
+        return str(context)
+    global event_counter
+    if keyshard_ID == bin:
+        tempContext[keyshard_ID][node_ID] = tempContext[keyshard_ID][node_ID] + 1
+        if keyname in d and areContextLarger(tempContext[keyshard_ID], d[keyname]['context']):
+            updateVectorClock()
+            d[keyname]['exist'] = False
+            d[keyname]['context'] = tempContext[keyshard_ID]
+            payload = {'doesExist': True, 'message': 'Deleted successfully'}
+            if 'from_node':
+                payload['address'] = ADDRESS
+            payload['causal-context'] = tempContext
+            event_counter = event_counter + 1
+            event_log.append([copy.deepcopy(context[keyshard_ID]), 'DEL', keyname, event_counter])
+            return jsonify(payload), 200
 
-    if keyname in d:
-        del d[keyname]
-        payload = {'doesExist': True, 'message': 'Deleted successfully'}
-        if 'from_node':
-            payload['address'] = ADDRESS
-        return jsonify(payload), 200
     else:
-        if 'from_node' in request.headers:  # just need to check if there is a from_node header
-            return jsonify(doesExist=False, error='Key does not exist', message='Error in DELETE'), 404
-        else:
-            return forward_request(request, view[bin])
+        return jsonify(doesExist=False, error='Key does not exist', message='Error in DELETE'), 404
+
 
 
 # Get key count
@@ -265,10 +277,15 @@ def periodicGossipReceived():
         if entry[2] in d.keys():
             tempContext = d[entry[2]]['context']
         else:
-            tempContext = [0 for i in context[keyshard_ID]]
+            tempContext = [0 for _ in context[keyshard_ID]]
         if areContextLarger(entry[0], tempContext):
-            d[entry[2]] = {}
-            d[entry[2]]['value'] = entry[3]
+            if entry[2] not in d.keys():
+                d[entry[2]] = {}
+            if entry[1] == 'DEL':
+                d[entry[2]]['exist'] = False
+            else:
+                d[entry[2]]['value'] = entry[4]
+                d[entry[2]]['exist'] = True
             d[entry[2]]['context'] = entry[0]
         elif areContextConcurrent(entry[0], tempContext):
             replace = False
@@ -279,11 +296,16 @@ def periodicGossipReceived():
                 elif entry[0][index] < tempContext[index]:
                     break
             if replace:
-                d[entry[2]] = {}
-                d[entry[2]]['value'] = entry[3]
+                if entry[2] not in d.keys():
+                    d[entry[2]] = {}
+                if entry[1] == 'DEL':
+                    d[entry[2]]['exist'] = False
+                else:
+                    d[entry[2]]['value'] = entry[4]
+                    d[entry[2]]['exist'] = True
                 d[entry[2]]['context'] = entry[0]
         clock = entry[0]
-        counter = entry[4]
+        counter = entry[3]
     updateContext(clock)
     if counter > -1:
         requests.put(url="http://" + request.headers['from_node'] + "/ack/" + str(view.index(ADDRESS)),
@@ -299,8 +321,8 @@ class Poop(dict):
 def debug():
         return "\nd\t" + str(Poop(d)) + "\nevent log\t" + str(event_log) + \
                "\ncontext\t" + str(context) + "\nacks\t" + \
-               str(acks) + "\nkeyshard_ID\t" + str(keyshard_ID) + "\nnode_ID\t" + str(node_ID) + "\nMin\t" + \
-               str(acks[min(acks, key=acks.get)]) + "\nevent_counter\t" + str(event_counter)
+               str(acks) + "\nkeyshard_ID\t" + str(keyshard_ID) + "\nnode_ID\t" + str(node_ID) + \
+               "\nevent_counter\t" + str(event_counter)
 
 
 # acks of periodic gossip
@@ -309,7 +331,7 @@ def debug():
 def ackReceived(index):
     acks[index] = request.get_json()['counter']
     minimum = acks[min(acks, key=acks.get)]
-    while len(event_log) > 0 and event_log[0][4] <= minimum:
+    while len(event_log) > 0 and event_log[0][3] <= minimum:
         event_log.pop(0)
     return ""
 
@@ -409,28 +431,29 @@ def before_first_request():
     scheduler.start()
 
 def periodicGossip():
-    temp = view.index(ADDRESS)
-    if len(acks.keys()) < repl_factor - 1:
+    if len(event_log) > 0:
+        temp = view.index(ADDRESS)
+        if len(acks.keys()) < repl_factor - 1:
+            for index in range(keyshard_ID, len(view), int(len(view) / repl_factor)):
+                if index != temp:
+                    acks[str(index)] = -1
         for index in range(keyshard_ID, len(view), int(len(view) / repl_factor)):
             if index != temp:
-                acks[str(index)] = -1
-    for index in range(keyshard_ID, len(view), int(len(view) / repl_factor)):
-        if index != temp:
-            try:
-                requests.put(url="http://" + view[index] + "/gossip",
-                headers={'from_node': ADDRESS, "Content-Type": "application/json"},
-                data = json.dumps([entry for entry in event_log if entry[4] > acks[str(index)]]))
-            except ConnectionError:
-                pass
-            except requests.exceptions.ConnectionError:
-                pass
+                try:
+                    requests.put(url="http://" + view[index] + "/gossip",
+                                 headers={'from_node': ADDRESS, "Content-Type": "application/json"},
+                                 data=json.dumps([entry for entry in event_log if entry[3] > acks[str(index)]]))
+                except ConnectionError:
+                    pass
+                except requests.exceptions.ConnectionError:
+                    pass
 
 
 if __name__ == "__main__":
     app.debug = True
     ADDRESS = sys.argv[1]
     view = sys.argv[2].split(',')
-    #repl_factor = int(sys.argv[3])
+    repl_factor = int(sys.argv[3])
     keyshard_ID = int(view.index(ADDRESS) % (len(view) / repl_factor))  # initialized to its index for post @188
     node_ID = int(math.ceil((view.index(ADDRESS) + 1) / (len(view) / repl_factor)) - 1)
     context = initialize_context()
