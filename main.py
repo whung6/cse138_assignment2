@@ -141,17 +141,28 @@ def putKey(keyname):
 def getKey(keyname):
     bin = hash(keyname) % len(view)
     isUpdated = True
+    
     # Check if key already exists. If it does, find if the current context is the most updated one.
-
     if keyname in d:
         # Find if current context is the most updated one
-        
-        
-        if isUpdated is True:
+        for entry in log:
+            if entry[2] in d.keys():
+                tempContext = d[entry[2]]['context']
+        else:
+            tempContext = context[keyshard_ID]
             
+        if areContextLarger(entry[0], tempContext):
+            # maybe gossip?
+            continue
+        elif areContextConcurrent(entry[0], tempContext):
+            continue
+        else:
+            isUpdated = False
+            break
+        
         # If it is the most updated context we can return the most updated value
         # If it is not the most updated context we return a NACK
-        
+        if isUpdated is True:
             payload = {"doesExist": True, "message": 'Retrieved successfully', "value": d[keyname]['value']}
             # If it's not directly from client, add the correct address
             if 'from_node' in request.headers:
@@ -159,7 +170,7 @@ def getKey(keyname):
             updateVectorClock()
             return jsonify(payload), 200
         else:
-            return jsonify(message= 'Value is not current.')
+            return jsonify(message= 'NACK. Value is not current.')
             
     else:
         if 'from_node' in request.headers:
