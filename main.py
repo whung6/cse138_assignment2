@@ -7,6 +7,7 @@ import sys
 import requests
 import math
 from flask_apscheduler import APScheduler
+import copy
 
 
 
@@ -38,6 +39,9 @@ repl_factor = 1
 # the event is a list
 # format goes [context[keyshard_ID], 'PUT/DEL', 'key', 'value (leave blank if del)']
 event_log = []
+
+# to keep live easy, increase for every event added to event_log
+event_counter = 0
 
 # acks = a record of which node got which gossip, so we don't have to send a huge list of event_log every time
 # key is the index of the other node
@@ -112,23 +116,24 @@ def putKey(keyname):
 
     # Get request
     req = request.get_json()
-
-    if view[bin] == ADDRESS:
+    global event_counter
+    if bin == keyshard_ID:
         updateVectorClock()
-        event_log.append([context[keyshard_ID], 'PUT', keyname, req.get('value')])
+        event_counter = event_counter + 1
+        event_log.append([copy.deepcopy(context[keyshard_ID]), 'PUT', keyname, req.get('value'), event_counter])
         if not req or "value" not in req:
             return jsonify(error='value is missing', message='Error in PUT'), 400
 
         # Check if key already exists
         if keyname in d:
             d[keyname]['value'] = req.get('value')
-            d[keyname]['context'] = context[keyshard_ID]
+            d[keyname]['context'] = copy.deepcopy(context[keyshard_ID])
             return jsonify(message='Updated successfully', replaced=True), 200
         # Add new key
         else:
             d[keyname] = {}
             d[keyname]['value'] = req.get('value')
-            d[keyname]['context'] = context[keyshard_ID]
+            d[keyname]['context'] = copy.deepcopy(context[keyshard_ID])
             return jsonify(message='Added successfully', replaced=False), 200
 
     else:
@@ -224,17 +229,32 @@ def startDistribution():
     return key_distribute(), 200
 
 
+def updateContext(newContext):
+    global context
+    # if the new context is larger than own context
+    if areContextLarger(newContext, context[keyshard_ID]):
+        # just use the new context
+        context[keyshard_ID] = newContext
+    # if they're concurrent, take the larger one of them all
+    elif areContextConcurrent(newContext, context[keyshard_ID]):
+        for index in range(len(newContext)):
+            if newContext[index] > context[keyshard_ID][index]:
+                context[keyshard_ID][index] = newContext[index]
+
+
+
 # periodic gossip receiving end
 # need to polish
 @app.route('/gossip', methods=['PUT'])
 def periodicGossipReceived():
     log = request.get_json()
-    clock = context
+    clock = context[keyshard_ID]
+    counter = -1
     for entry in log:
         if entry[2] in d.keys():
             tempContext = d[entry[2]]['context']
         else:
-            tempContext = context[keyshard_ID]
+            tempContext = [0 for i in context[keyshard_ID]]
         if areContextLarger(entry[0], tempContext):
             d[entry[2]] = {}
             d[entry[2]]['value'] = entry[3]
@@ -242,27 +262,44 @@ def periodicGossipReceived():
         elif areContextConcurrent(entry[0], tempContext):
             replace = False
             for index in range(len(entry[0])):
-                if entry[0][index] > d[entry[2]]['context'][index]:
+                if entry[0][index] > tempContext[index]:
                     replace = True
                     break
-                elif entry[0][index] < d[entry[2]]['context'][index]:
+                elif entry[0][index] < tempContext[index]:
                     break
             if replace:
                 d[entry[2]] = {}
                 d[entry[2]]['value'] = entry[3]
                 d[entry[2]]['context'] = entry[0]
         clock = entry[0]
-    requests.put(url="http://" + request.headers['from_node'] + "/ack/" + str(view.index(ADDRESS)),
-                 headers={'from_node': ADDRESS, "Content-Type": "application/json"},
-                 data=json.dumps({"updated_clock": clock}))
+        counter = entry[4]
+    updateContext(clock)
+    if counter > -1:
+        requests.put(url="http://" + request.headers['from_node'] + "/ack/" + str(view.index(ADDRESS)),
+                     headers={'from_node': ADDRESS, "Content-Type": "application/json"},
+                     data=json.dumps({"counter": counter}))
     return ""
+
+class Poop(dict):
+    def __str__(self):
+        return json.dumps(self, indent=4, sort_keys=True)
+
+@app.route('/debug', methods=['GET'])
+def debug():
+        return "\nd\t" + str(Poop(d)) + "\nevent log\t" + str(event_log) + \
+               "\ncontext\t" + str(context) + "\nacks\t" + \
+               str(acks) + "\nkeyshard_ID\t" + str(keyshard_ID) + "\nnode_ID\t" + str(node_ID) + "\nMin\t" + \
+               str(acks[min(acks, key=acks.get)]) + "\nevent_counter\t" + str(event_counter)
 
 
 # acks of periodic gossip
 # index is the index of the sender in view, because I'm lazy
 @app.route('/ack/<index>', methods=['PUT'])
 def ackReceived(index):
-    acks[str(index)] = request.get_json()['updated_clock']
+    acks[index] = request.get_json()['counter']
+    minimum = acks[min(acks, key=acks.get)]
+    while len(event_log) > 0 and event_log[0][4] <= minimum:
+        event_log.pop(0)
     return ""
 
 
@@ -348,7 +385,9 @@ def forward_request(request, node):
             data=request.get_data(),
             timeout=20)
         return jsonify(response.json()), response.status_code
-    except Exception:
+    except ConnectionError:
+        return jsonify(error='Node ' + node + " is down", message='Error in ' + request.method), 503
+    except requests.exceptions.Timeout:
         return jsonify(error='Node ' + node + " is down", message='Error in ' + request.method), 503
 
 @app.before_first_request
@@ -360,11 +399,20 @@ def before_first_request():
 
 def periodicGossip():
     temp = view.index(ADDRESS)
+    if len(acks.keys()) < repl_factor - 1:
+        for index in range(keyshard_ID, len(view), int(len(view) / repl_factor)):
+            if index != temp:
+                acks[str(index)] = -1
     for index in range(keyshard_ID, len(view), int(len(view) / repl_factor)):
         if index != temp:
-            requests.put(url="http://" + view[index] + "/gossip",
-                         headers={'from_node': ADDRESS, "Content-Type": "application/json"},
-                         data=json.dumps(event_log))
+            try:
+                requests.put(url="http://" + view[index] + "/gossip",
+                headers={'from_node': ADDRESS, "Content-Type": "application/json"},
+                data = json.dumps([entry for entry in event_log if entry[4] > acks[str(index)]]))
+            except ConnectionError:
+                pass
+            except requests.exceptions.ConnectionError:
+                pass
 
 
 if __name__ == "__main__":
