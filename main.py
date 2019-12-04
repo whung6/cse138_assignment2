@@ -175,7 +175,7 @@ def getKey(keyname):
             updateVectorClock()
             return jsonify(payload), 200
         else:
-            return jsonify(message= 'NACK. Value is not current.')
+            return jsonify(error = 'Unable to satisfy request.', message = 'Error in <HTTP Method.>')
             
     else:
         if 'from_node' in request.headers:
