@@ -50,6 +50,10 @@ acks = {}
 # Current view
 view = []
 
+# if we're gonna do something that might screw up if gossip is running around like view change
+# (since gossips are on a different thread)
+# then set this to False, then periodic gossip will stop, then set this to True again to make it run
+shouldDoGossip = True
 
 # creates a 2D array of 0's with size [keyshards][repl_factor]
 # keyshards = number of nodes / repl_factor = number of keyshards
@@ -59,7 +63,19 @@ def initialize_context():
     return [[0 for _ in range(repl_factor)] for _ in range(int(len(view) / repl_factor))]
 
 
-# is context1 > than the compared context
+# is context1 strictly larger than context2
+# [0, 0, 0, 0] and [0, 0, 0, 0] returns FALSE
+def areContextStrictlyLarger(context1, context2):
+    larger = False
+    for index in range(len(context2)):
+        if context1[index] < context2[index]:
+            return False
+        if context1[index] > context2[index]:
+            larger = True
+    return larger
+
+# is context larger or equal
+# [0, 0, 0, 0] return true, use this to determine if we can accept client's request
 def areContextLarger(context1, context2):
     for index in range(len(context2)):
         if context1[index] < context2[index]:
@@ -124,7 +140,7 @@ def putKey(keyname):
             return jsonify(error='value is missing', message='Error in PUT'), 400
 
         # Check if key already exists
-        if keyname in d:
+        if keyname in d.keys():
             d[keyname]['value'] = req.get('value')
             d[keyname]['context'] = copy.deepcopy(context[keyshard_ID])
             return jsonify(message='Updated successfully', replaced=True), 200
@@ -138,6 +154,7 @@ def putKey(keyname):
 
     else:
         return forward_request(request, view[bin])
+
 
 
 
@@ -175,7 +192,7 @@ def getKey(keyname):
             updateVectorClock()
             return jsonify(payload), 200
         else:
-            return jsonify(error = 'Unable to satisfy request.', message = 'Error in <HTTP Method.>')
+            return jsonify(error='Unable to satisfy request.', message='Error in <HTTP Method.>')
             
     else:
         if 'from_node' in request.headers:
@@ -207,33 +224,83 @@ def getAllShards():
     return jsonify(allShards), 200
      
 # Delete key
+#TODO: concurrnet request, immediate gossip
 @app.route('/kv-store/keys/<keyname>', methods=['DELETE'])
 def deleteKey(keyname):
+    # calculate the shard this index belongs to
     bin = hash(keyname) % int(len(view) / repl_factor)
-    # Get request
-    req = request.get_json()
-    tempContext = req['causal-context']
-    # client doesn't have a context or client's context is outdated for the current view
-    if tempContext == '' or len(tempContext) != len(context) or len(tempContext[0]) != len(context[0]):
-        return str(context)
     global event_counter
+    # if it belongs to this keyshard
     if keyshard_ID == bin:
-        tempContext[keyshard_ID][node_ID] = tempContext[keyshard_ID][node_ID] + 1
-        if keyname in d and areContextLarger(tempContext[keyshard_ID], d[keyname]['context']):
-            updateVectorClock()
-            d[keyname]['exist'] = False
-            d[keyname]['context'] = tempContext[keyshard_ID]
-            payload = {'doesExist': True, 'message': 'Deleted successfully'}
-            if 'from_node':
-                payload['address'] = ADDRESS
-            payload['causal-context'] = tempContext
-            event_counter = event_counter + 1
-            event_log.append([copy.deepcopy(context[keyshard_ID]), 'DEL', keyname, event_counter])
-            return jsonify(payload), 200
-
+        # Get request
+        req = request.get_json()
+        tempContext = req['causal-context']
+        # client doesn't have a context or client's context is outdated for the current view
+        if tempContext == '' or len(tempContext) != len(context) or type(tempContext[0]) is not list or len(tempContext[0]) != len(context[0]) or type(tempContext[0][0]) is not int:
+            # treat it as a 0 context
+            tempContext = initialize_context()
+        # if this key exist
+        if areContextStrictlyLarger(tempContext[keyshard_ID], context[keyshard_ID]):
+            tempContext[keyshard_ID] = context[keyshard_ID]
+            # refuse to serve: we do not know what other things does the client know about and could
+            # possibly violate causality, so we give them OUR most-updated context
+            return json.dumps({'message': 'Error in PUT', 'error': 'Unable to satisfy request',
+                               'causal-context': tempContext}), 503
+        # if client's context is strictly larger than ours
+        # if it's equal or smaller, that means we can serve them
+        elif areContextLarger(tempContext[keyshard_ID], context[keyshard_ID]) or not areContextConcurrent(
+                tempContext[keyshard_ID], context[keyshard_ID]):
+            if keyname in d.keys() and d[keyname]['exist']:
+                # update our own vector clock
+                updateVectorClock()
+                # make this key not exist
+                d[keyname]['exist'] = False
+                # since it's equal or smaller, just use our context
+                tempContext[keyshard_ID] = context[keyshard_ID]
+                # update the key's context in d
+                d[keyname]['context'] = tempContext[keyshard_ID]
+                # give back their stuff
+                payload = {'doesExist': True, 'message': 'Deleted successfully'}
+                if 'from_node' in request.headers:
+                    payload['address'] = ADDRESS
+                payload['causal-context'] = tempContext
+                # append to event_log, 'poop' is just to make all entries equal length
+                event_counter = event_counter + 1
+                event_log.append([copy.deepcopy(context[keyshard_ID]), 'DEL', keyname, event_counter, 'poop'])
+                return jsonify(payload), 200
+            else:
+                tempContext[keyshard_ID] = context[keyshard_ID]
+                # this does not exist
+                return jsonify(doesExist=False, error='Key does not exist', message='Error in DELETE', context=tempContext), 404
+        # it's concurrent
+        else:
+            pass
     else:
-        return jsonify(doesExist=False, error='Key does not exist', message='Error in DELETE'), 404
-
+        # for all node that is in the destination keyshard
+        final_response = None
+        final_status_code = None
+        node_is_alive = False
+        # forward this to at least one node in destiny keyshard
+        for index in range(bin, len(view), int(len(view) / repl_factor)):
+            # try forwarding it
+            response, status_code = forward_request(request, view[index])
+            # if it succeeds
+            if status_code == 200:
+                # just return it
+                return response, status_code
+            # if it's key not found error, maybe they haven't gossiped yet
+            elif status_code == 404:
+                # but record it anyways
+                final_response = response
+                final_status_code = status_code
+                # and say that at least someone is alive
+                node_is_alive = True
+        # if someone is alive, even if it doesn't succeed, return their response
+        if node_is_alive:
+            return final_response, final_status_code
+        # if all of the nodes failed, nak
+        else:
+            return jsonify({'message': 'Error in PUT', 'error': 'Unable to satisfy request'}), 503
 
 
 # Get key count
@@ -267,34 +334,53 @@ def updateContext(newContext):
 
 
 # periodic gossip receiving end
-# need to polish
 @app.route('/gossip', methods=['PUT'])
 def periodicGossipReceived():
     log = request.get_json()
-    clock = context[keyshard_ID]
     counter = -1
+    global event_counter
     for entry in log:
+        # if this key exists
         if entry[2] in d.keys():
+            # use the context in d, the last-updated context
             tempContext = d[entry[2]]['context']
         else:
+            # use 0,0,0,0 for last updated context for this key
             tempContext = [0 for _ in context[keyshard_ID]]
-        if areContextLarger(entry[0], tempContext):
+        # is the event context strictly > the last updated context for this key?
+        if areContextStrictlyLarger(entry[0], tempContext):
+            # if yes then update the key
             if entry[2] not in d.keys():
                 d[entry[2]] = {}
+            # if it's del then just mark exist false for deleting instead of actually deleting it
             if entry[1] == 'DEL':
                 d[entry[2]]['exist'] = False
-            else:
+            elif entry[1] == 'PUT':
+                # if it's put then put value in
                 d[entry[2]]['value'] = entry[4]
                 d[entry[2]]['exist'] = True
             d[entry[2]]['context'] = entry[0]
+            # since this event changes d, put this into event log again in the case of partial partition
+            event_counter = event_counter + 1
+            event_log.append([entry[0], entry[1], entry[2],  event_counter, entry[3]])
+        # if this entry is concurrent with the last update
         elif areContextConcurrent(entry[0], tempContext):
             replace = False
+            # check for every index
             for index in range(len(entry[0])):
+                # if the first different vector clock has the entry's event be larger
                 if entry[0][index] > tempContext[index]:
+                    # that means this is a change that the nodes in the front of the list knows about
+                    # while the nodes in the back don't, and since we're listening to whoever
+                    # is in the front of the list, we take it
                     replace = True
                     break
+                # if the first different vector clock has the entry's event be smaller
                 elif entry[0][index] < tempContext[index]:
+                    # that means this is a change that we know yet the nodes further down the list don't know yet
+                    # so ignore it
                     break
+            # same thing as above
             if replace:
                 if entry[2] not in d.keys():
                     d[entry[2]] = {}
@@ -304,13 +390,19 @@ def periodicGossipReceived():
                     d[entry[2]]['value'] = entry[4]
                     d[entry[2]]['exist'] = True
                 d[entry[2]]['context'] = entry[0]
-        clock = entry[0]
+                event_counter = event_counter + 1
+                event_log.append([entry[0], entry[1], entry[2], event_counter, entry[3]])
+        # update the context regardless of whether we take it, new context is just the two contexts combined
+        # taking the larger number from each
+        updateContext(entry[0])
+        # set counter to the last event we process
         counter = entry[3]
-    updateContext(clock)
+    # send an ack to the sender node, saying "we've received everything up to counter"
     if counter > -1:
         requests.put(url="http://" + request.headers['from_node'] + "/ack/" + str(view.index(ADDRESS)),
                      headers={'from_node': ADDRESS, "Content-Type": "application/json"},
                      data=json.dumps({"counter": counter}))
+    # so flask shuts up
     return ""
 
 class Poop(dict):
@@ -322,17 +414,21 @@ def debug():
         return "\nd\t" + str(Poop(d)) + "\nevent log\t" + str(event_log) + \
                "\ncontext\t" + str(context) + "\nacks\t" + \
                str(acks) + "\nkeyshard_ID\t" + str(keyshard_ID) + "\nnode_ID\t" + str(node_ID) + \
-               "\nevent_counter\t" + str(event_counter)
+               "\nevent_counter\t" + str(event_counter) + "\nview\t" + str(view)
 
 
 # acks of periodic gossip
 # index is the index of the sender in view, because I'm lazy
 @app.route('/ack/<index>', methods=['PUT'])
 def ackReceived(index):
+    # use index for ack
     acks[index] = request.get_json()['counter']
+    # get the minimum counter from the list of acks
     minimum = acks[min(acks, key=acks.get)]
+    # remove the entry that everyone has received and processed
     while len(event_log) > 0 and event_log[0][3] <= minimum:
         event_log.pop(0)
+    # so flask shuts up
     return ""
 
 
@@ -410,18 +506,18 @@ def forward_request(request, node):
     if 'from_node' not in request.headers:
         # mark that this is forwarded from this node
         headers['from_node'] = ADDRESS
-    try:
-        response = requests.request(
-            method=request.method,
-            url=request.url.replace(request.host, node),
-            headers=headers,
-            data=request.get_data(),
-            timeout=20)
-        return jsonify(response.json()), response.status_code
-    except ConnectionError:
-        return jsonify(error='Node ' + node + " is down", message='Error in ' + request.method), 503
-    except requests.exceptions.Timeout:
-        return jsonify(error='Node ' + node + " is down", message='Error in ' + request.method), 503
+        try:
+            response = requests.request(
+                method=request.method,
+                url=request.url.replace(request.host, node),
+                headers=headers,
+                data=request.get_data(),
+                timeout=20)
+            return response.json(), response.status_code
+        except ConnectionError:
+            return jsonify(error='Node ' + node + " is down", message='Error in ' + request.method), 503
+        except requests.exceptions.ConnectionError:
+            return jsonify(error='Node ' + node + " is down", message='Error in ' + request.method), 503
 
 @app.before_first_request
 def before_first_request():
@@ -429,24 +525,37 @@ def before_first_request():
     scheduler.init_app(app)
     app.apscheduler.add_job(func=periodicGossip, trigger='interval', seconds=10, id='0')
     scheduler.start()
-
-def periodicGossip():
-    if len(event_log) > 0:
-        temp = view.index(ADDRESS)
-        if len(acks.keys()) < repl_factor - 1:
-            for index in range(keyshard_ID, len(view), int(len(view) / repl_factor)):
-                if index != temp:
-                    acks[str(index)] = -1
+    temp = view.index(ADDRESS)
+    # initialize the acks dict
+    if len(acks.keys()) < repl_factor - 1:
         for index in range(keyshard_ID, len(view), int(len(view) / repl_factor)):
             if index != temp:
-                try:
-                    requests.put(url="http://" + view[index] + "/gossip",
-                                 headers={'from_node': ADDRESS, "Content-Type": "application/json"},
-                                 data=json.dumps([entry for entry in event_log if entry[3] > acks[str(index)]]))
-                except ConnectionError:
-                    pass
-                except requests.exceptions.ConnectionError:
-                    pass
+                acks[str(index)] = -1
+
+def periodicGossip():
+    # if there's no replica, just clear up event_log
+    if repl_factor == 1:
+        global event_log
+        event_log = []
+    else:
+        # if there's event to be sent and we're not doing something else
+        if len(event_log) > 0 and shouldDoGossip:
+            temp = view.index(ADDRESS)
+            # for every node that is in the same keyshard as this node
+            for index in range(keyshard_ID, len(view), int(len(view) / repl_factor)):
+                # if it's not this node
+                if index != temp:
+                    # put the gossip request
+                    try:
+                        requests.put(url="http://" + view[index] + "/gossip",
+                                     headers={'from_node': ADDRESS, "Content-Type": "application/json"},
+                                     # the list comprehension just means only send the ones that the target
+                                     # node has not seen
+                                     data=json.dumps([entry for entry in event_log if entry[3] > acks[str(index)]]))
+                    except ConnectionError:
+                        pass
+                    except requests.exceptions.ConnectionError:
+                        pass
 
 
 if __name__ == "__main__":
