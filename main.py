@@ -447,7 +447,7 @@ def viewChange():
     new_view = req['view']
     new_repl_factor = req['repl_factor']
     new_shard_map = []
-    for index in range(0,repl_factor):
+    for index in range(0,int(len(new_view)/new_repl_factor):
         new_shard_map[index] = view[index*repl_factor:(index+1)*repl_factor]
     view = new_view.split(',')
     shard_map = new_shard_map
