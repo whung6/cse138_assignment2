@@ -50,10 +50,16 @@ acks = {}
 # Current view
 view = []
 
+#current shard map
+shard_map = []
+
 # if we're gonna do something that might screw up if gossip is running around like view change
 # (since gossips are on a different thread)
 # then set this to False, then periodic gossip will stop, then set this to True again to make it run
 shouldDoGossip = True
+
+#counter for number of view-change operations that have completed. Once we have gotten blobs from every other node, the view change is considered completed
+view_change_counter = 0
 
 # creates a 2D array of 0's with size [keyshards][repl_factor]
 # keyshards = number of nodes / repl_factor = number of keyshards
@@ -439,6 +445,7 @@ def ackReceived(index):
 # perform a view change
 def viewChange():
     global view
+    shouldDoGossip = False #turn off gossip until we are done
     req = request.get_json()
     new_view = req['view']
     view = new_view.split(',')
@@ -464,24 +471,47 @@ def viewChange():
     else:
         return "ok", 200
 
+#inserts a bunch of keys at once. Done during a view change. It is assumed that this is done only once, and all the keys have their vector clocks set to 0
+#expects the message body to be a JSON dict to be merged with the current dict, with the same structure
+@app.route('/kv-store/insert-blob', methods = ['PUT'])
+def insertBlob():
+    global view_change_counter
+    req = request.get_json()
+    for key in list(req.keys()):
+        #first check if the newly supplied value is newer than the one we have, and if so replace. Otherwise we leave it alone
+        if key in d:
+            if areContextStrictlyLarger(req[key]['context'],d[key]['context']):
+                d[key] = req[key]
+        else:
+            d[key] = req[key]
+    view_change_counter = view_change_counter + 1
+    if view_change_counter == len(view): #received shit from everyone, now we're done and we can set all the vector clocks to 0 and do gossip again
+        for key in d.keys():
+            for i in range(0,len(d[key]['context'])): #reset the vector clock
+                d[key]['context'][i] = 0
+        shouldDoGossip = True
+    return "ok",200
+
 
 # helper method to rehash and redistribute keys according to the new view
 # returns either an error message detailing which node failed to accept their new key(s) or the string "ok"
 # this method tries to do everything in order, rather than broadcasting
 def key_distribute():
-    for key in list(d.keys()):
-        new_index = hash(key) % len(view)
-        # If the key no longer belongs here, send it where it belongs
-        if new_index != view.index(ADDRESS):
+    #sends blobs to everyone in the new view
+    for index in range(0,len(shard_map)):
+        to_send = {}
+        for key in list(d.keys()):
+            if hash(key) % len(shard_map) == index: #send the blob to every single member of the key shard
+                to_send[key] = d[key]
+        for node in shard_map[index]:
             try:
-                requests.put(url="http://" + view[new_index] + "/kv-store/keys/" + key,
-                             headers={'from_node': ADDRESS, "Content-Type": "application/json"},
-                             data="{\"value\": \"" + d[key]['value'] + "\"}")
-                del d[key]  # delete the key
+                requests.put(new_addr + "/kv-store/insert-blob", headers = {'from_node': ADDRESS},
+                            data = jsonify(to_send))
             except Exception:
-                return "Node " + view[new_index] + " did not accept key " + key
-    return "ok"
-
+                return Exception
+        #delete the keys locally once the blob is sent
+        for key in to_send.keys():
+            del d[key]
 
 ##EXPERIMENTAL FEATURE
 # does the same thing as the above method, but adapted for xordist
