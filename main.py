@@ -572,9 +572,10 @@ def forward_request_multiple(request,nodes):
                     timeout=20)
                 return response.json(), response.status_code
             except ConnectionError:
-                return jsonify(error='Node ' + node + " is down", message='Error in ' + request.method), 503
+                continue
             except requests.exceptions.ConnectionError:
-                return jsonify(error='Node ' + node + " is down", message='Error in ' + request.method), 503
+                continue
+        return "None of the nodes received the request",400
 
 
 @app.before_first_request
