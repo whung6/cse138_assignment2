@@ -20,13 +20,6 @@ d = {}
 # Node's address
 ADDRESS = ""
 
-# the vector clock index in context, add 1 if used as ID
-# view.index(ADDRESS) + 1 % repl_factor
-keyhard_ID = 0
-
-# the column of this node in the vector clock
-# math.floor((view.index(ADDRESS) + 1) / repl_factor) - 1
-# need to manually set to 0 if repl_factor = 1
 # the vector clock index in context, add 1 if used as keyshard ID
 # view.index(ADDRESS) % (len(view) / repl_factor)
 keyshard_ID = 0
