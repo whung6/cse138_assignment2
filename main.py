@@ -168,7 +168,7 @@ def putKey(keyname):
 @app.route('/kv-store/keys/<keyname>', methods=['GET'])
 def getKey(keyname):
     
-    bin = hash(keyname) % len(view)
+    bin = hash(keyname) % len(shard_map)
     global event_counter
     req = request.get_json()
     tempContext = req['causal-context']
@@ -216,9 +216,9 @@ def getKey(keyname):
             final_status_code = None
             node_is_alive = False
             # forward this to at least one node in destiny keyshard
-            for index in range(bin, len(view), int(len(view) / repl_factor)):
+            for node in shard_map[bin]:
                 # try forwarding it
-                response, status_code = forward_request(request, view[index])
+                response, status_code = forward_request(request, node)
                 # if it succeeds
                 if status_code == 200:
                     # just return it
