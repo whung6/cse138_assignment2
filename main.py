@@ -250,34 +250,36 @@ def putKey(keyname):
 
     else:
         return forward_request(request, shard_map[bin][0])
+<<<<<<< HEAD
 
 
 
+=======
+>>>>>>> d5c249b13beead2f6f74e216dd3d8a737360b7ad
 
 # Get key
 @app.route('/kv-store/keys/<keyname>', methods=['GET'])
 def getKey(keyname):
     
-    bin = hash(keyname) % len(view)
+    bin = hash(keyname) % len(shard_map)
     global event_counter
     req = request.get_json()
     tempContext = req['causal-context']
     
     # Check if key exists.
-    if keyname in d and d[keyname]['exists'] is True:
-         # Check client context and initialize if needed.
+    if keyname in d.keys() and d[keyname]['exists'] is True:
+        # Check client context and initialize if needed.
         if tempContext == '' or len(tempContext) != len(context) or len(tempContext[0]) != len(context[0]):
             tempContext = initialize_context()
  
         # Violates causal causality as client context is greater.
-        if areContextLarger(tempContext[keyshard_ID], d[keyname]['context']):
+        if areContextStrictlyLarger(tempContext[keyshard_ID], context[keyshard_ID]):
             tempContext[keyshard_ID] = context[keyshard_ID]
-            return jsonify(error = 'Unable to satisfy request.', message = 'Error in <HTTP Method.>'), 503
+            return jsonify(error = 'Unable to satisfy request.', message = 'Error in GET'), 503
         
         # Return if client context is equal or smaller.
         elif areContextLarger(tempContext[keyshard_ID], context[keyshard_ID]) or not areContextConcurrent(tempContext[keyshard_ID], context[keyshard_ID]):
             payload = {"doesExist": True, "message": 'Retrieved successfully', "value": d[keyname]['value']} 
-            # Use our own context.
             tempContext[keyshard_ID] = context[keyshard_ID]
             d[keyname]['context'] = tempContext[keyshard_ID]
             payload['causal-context'] = tempContext
@@ -288,7 +290,7 @@ def getKey(keyname):
             updateVectorClock()
             # Update event counter.
             event_counter = event_counter + 1
-            event_log.append([copy.deepcopy(context[keyshard_ID]), 'GET', keyname, event_counter, 'poop'])
+            event_log.append([copy.deepcopy(context[keyshard_ID]), 'GET', keyname, event_counter, req.get('value')])
              # If it's not directly from client, add the correct address
             if 'from_node' in request.headers:
                 payload['address'] = ADDRESS
@@ -306,9 +308,9 @@ def getKey(keyname):
             final_status_code = None
             node_is_alive = False
             # forward this to at least one node in destiny keyshard
-            for index in range(bin, len(view), int(len(view) / repl_factor)):
+            for node in shard_map[bin]:
                 # try forwarding it
-                response, status_code = forward_request(request, view[index])
+                response, status_code = forward_request(request, node)
                 # if it succeeds
                 if status_code == 200:
                     # just return it
@@ -325,7 +327,7 @@ def getKey(keyname):
                 return final_response, final_status_code
             # if all of the nodes failed, nak
             else:
-                return jsonify({'message': 'Error in PUT', 'error': 'Unable to satisfy request'}), 503
+                return jsonify(error = 'Unable to satisfy request.', message = 'Error in GET'), 503
 
 
 # Get shard (replicas not yet implemented)
