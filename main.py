@@ -62,6 +62,10 @@ testString = ""
 #current shard map
 shard_map = [] 
 
+# debug tool: key is index of target node in view, value is the address
+# this blocks all connection FROM this node to target node but not the other way
+partialPartitionList = {}
+
 # if we're gonna do something that might screw up if gossip is running around like view change
 # (since gossips are on a different thread)
 # then set this to False, then periodic gossip will stop, then set this to True again to make it run
@@ -525,7 +529,9 @@ def debug():
         return "\nd\t" + str(Poop(d)) + "\nevent log\t" + str(event_log) + \
                "\ncontext\t" + str(context) + "\nacks\t" + \
                str(acks) + "\nkeyshard_ID\t" + str(keyshard_ID) + "\nnode_ID\t" + str(node_ID) + \
-               "\nevent_counter\t" + str(event_counter) + "\nview\t" + str(view) + "\ntest-string\t" + testString
+               "\nevent_counter\t" + str(event_counter) + "\nview\t" + str(view)  + "\nshard_map\t" + str(shard_map) + \
+               "\nshard_id\t" + str(shard_index) + "\nshards\t" + str(shards) + "\npartial partition list\t" + str(partialPartitionList) +\
+               "\ntest-string\t" + testString
 
 
 # acks of periodic gossip
@@ -541,6 +547,25 @@ def ackReceived(index):
         event_log.pop(0)
     # so flask shuts up
     return ""
+
+# for partial partition, cut the address of index from view
+@app.route('/partialPartition/<index>', methods=['PUT'])
+def poop(index):
+
+    partialPartitionList[index] = copy.deepcopy(view[int(index)])
+    shard_map[keyshard_ID][int(index) % repl_factor] = ADDRESS
+    shards[keyshard_ID][int(index) % repl_factor] = ADDRESS
+    view[int(index)] = ADDRESS
+    return "stfu"
+
+@app.route('/stopPartition/<index>', methods=['PUT'])
+def poop2(index):
+    global testString
+    view[int(index)] = copy.deepcopy(partialPartitionList[index])
+    shard_map[keyshard_ID][int(index) % repl_factor] = copy.deepcopy(partialPartitionList[index])
+    shards[keyshard_ID][int(index) % repl_factor] = copy.deepcopy(partialPartitionList[index])
+    partialPartitionList[index] = ""
+    return "stfu"
 
 
 # Helper method to rehash and redistribute keys according to the new view
