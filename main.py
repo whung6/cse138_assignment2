@@ -51,16 +51,14 @@ acks = {}
 # Current view
 view = []
 
-#index of all shards
-shards = []
-
-#the index where this shard lies 
-shard_index = 0
-
 testString = ""
 
 #current shard map
 shard_map = [] 
+
+# debug tool: key is index of target node in view, value is the address
+# this blocks all connection FROM this node to target node but not the other way
+partialPartitionList = {}
 
 # if we're gonna do something that might screw up if gossip is running around like view change
 # (since gossips are on a different thread)
@@ -148,7 +146,7 @@ def xordist_get_addr(key):
     return addr_min
 
 def send_replica(key):
-    for shard_address in shards[shard_index]:
+    for shard_address in shard_map[keyshard_ID]:
         if(shard_address != ADDRESS):
             try:
                 requests.put(url="http://" + shard_address + "/kv-store/keys_replica/" + key,
@@ -332,15 +330,19 @@ def getShard(id):
         for key in d.keys():
             if d[key]['exists']:
                 counter = counter + 1
-        return jsonify({"message": 'Shard information retrieved successfully', "shard-id": bin, "key-count": counter, "causal-context": jsonify({"c": context}), "replicas": shard_map[bin]})
+        return jsonify({"message": 'Shard information retrieved successfully', "shard-id": bin, "key-count": counter, "causal-context": context, "replicas": shard_map[bin]})
     else:
         return forward_request_multiple(request, shard_map[bin])
-
 
 # Get all shards
 @app.route('/kv-store/shards', methods=['GET'])
 def getAllShards():
-    return jsonify({"message": 'Shard information retrieved successfully', "causal-context": context, "shard-ids": range(0,len(shard_map))}),200
+    listOfShards = []
+    shardID = 0
+    for bin in shard_map:
+        listOfShards.append(shardID)
+        shardID = shardID + 1
+    return jsonify({"message": 'Shard information retrieved successfully', "causal-context": context, "shard-ids": listOfShards}),200
      
 # Delete key
 #TODO: immediate gossip
@@ -531,7 +533,9 @@ def debug():
         return "\nd\t" + str(Poop(d)) + "\nevent log\t" + str(event_log) + \
                "\ncontext\t" + str(context) + "\nacks\t" + \
                str(acks) + "\nkeyshard_ID\t" + str(keyshard_ID) + "\nnode_ID\t" + str(node_ID) + \
-               "\nevent_counter\t" + str(event_counter) + "\nview\t" + str(view) + "\ntest-string\t" + testString
+               "\nevent_counter\t" + str(event_counter) + "\nview\t" + str(view)  + "\nshard_map\t" + str(shard_map) + \
+               "\npartial partition list\t" + str(partialPartitionList) +\
+               "\ntest-string\t" + testString
 
 
 # acks of periodic gossip
@@ -547,6 +551,23 @@ def ackReceived(index):
         event_log.pop(0)
     # so flask shuts up
     return ""
+
+# for partial partition, cut the address of index from view
+@app.route('/partialPartition/<index>', methods=['PUT'])
+def poop(index):
+
+    partialPartitionList[index] = copy.deepcopy(view[int(index)])
+    shard_map[keyshard_ID][int(index) % repl_factor] = ADDRESS
+    view[int(index)] = ADDRESS
+    return "stfu"
+
+@app.route('/stopPartition/<index>', methods=['PUT'])
+def poop2(index):
+    global testString
+    view[int(index)] = copy.deepcopy(partialPartitionList[index])
+    shard_map[keyshard_ID][int(index) % repl_factor] = copy.deepcopy(partialPartitionList[index])
+    partialPartitionList[index] = ""
+    return "stfu"
 
 
 # Helper method to rehash and redistribute keys according to the new view
@@ -567,7 +588,7 @@ def viewChange():
         new_shard_map.append(view[index*repl_factor:(index+1)*repl_factor])
     keyshard_ID = math.floor(view.index(ADDRESS) / repl_factor)
     view = new_view
-    shards = build_shard_table(view,repl_factor)
+    shard_map = build_shard_table(view,repl_factor)
     shard_map = new_shard_map
     # if we need to, notify all the other nodes of this view change
     if 'from_node' not in request.headers:
@@ -742,8 +763,4 @@ if __name__ == "__main__":
         shard_map.append(view[index*repl_factor:(index+1)*repl_factor])
     node_ID = shard_map[keyshard_ID].index(ADDRESS)
     context = initialize_context()
-
-    shards = build_shard_table(view,repl_factor)
-    shard_index = find_shard_index(shards)
-
     app.run(host='0.0.0.0', port=13800)
