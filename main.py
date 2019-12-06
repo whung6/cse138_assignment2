@@ -57,7 +57,7 @@ shards = []
 #the index where this shard lies 
 shard_index = 0
 
-
+testString = ""
 
 #current shard map
 shard_map = [] 
@@ -83,11 +83,10 @@ def initialize_context():
 #calculate which shard a particular key is in by hash(key) % len(shards)
 #note: this is a pure function and does _not_ set shards, use its output
 def build_shard_table(v,n_shards):
-    s = [0]*(len(v)-1) #return value 
-    for i in range(0,len(v)-1,n_shards):
-        
-        s[i] = v[i:i+n_shards] #just smush each block of n_shards nodes into the thing. Since views are always in the same order this works.
-    print(s)
+    s = []
+    for i in range(0,len(v),n_shards):
+        s.append(v[i:i+n_shards])#just smush each block of n_shards nodes into the thing. Since views are always in the same order this works.
+
     return s
 def find_shard_index(shardList):
     for i in range(len(shardList)):
@@ -220,7 +219,7 @@ def putKey(keyname):
             return jsonify(error='value is missing', message='Error in PUT'), 400
 
         # Check if key already exists
-        if keyname in d.keys():
+        if keyname in d.keys() and d[keyname]['exist']:
             d[keyname]['value'] = req.get('value')
             d[keyname]['context'] = copy.deepcopy(context[keyshard_ID])
 
@@ -323,7 +322,11 @@ def getShard(id):
     if bin < 0 or bin >= len(shard_map):
         return jsonify({"message": "Node does not exist"})
     if bin == keyshard_ID:
-        return jsonify({"message": 'Shard information retrieved successfully', "shard-id": bin, "key-count": len(d), "causal-context": jsonify({"c": context}), "replicas": shard_map[bin]})
+        counter = 0
+        for key in d.keys():
+            if d[key]['exists']:
+                counter = counter + 1
+        return jsonify({"message": 'Shard information retrieved successfully', "shard-id": bin, "key-count": counter, "causal-context": jsonify({"c": context}), "replicas": shard_map[bin]})
     else:
         return forward_request_multiple(request, shard_map[bin])
 
@@ -522,7 +525,7 @@ def debug():
         return "\nd\t" + str(Poop(d)) + "\nevent log\t" + str(event_log) + \
                "\ncontext\t" + str(context) + "\nacks\t" + \
                str(acks) + "\nkeyshard_ID\t" + str(keyshard_ID) + "\nnode_ID\t" + str(node_ID) + \
-               "\nevent_counter\t" + str(event_counter) + "\nview\t" + str(view)
+               "\nevent_counter\t" + str(event_counter) + "\nview\t" + str(view) + "\ntest-string\t" + testString
 
 
 # acks of periodic gossip
@@ -557,10 +560,8 @@ def viewChange():
     for index in range(0,math.floor(len(view)/repl_factor)):
         new_shard_map.append(view[index*repl_factor:(index+1)*repl_factor])
     keyshard_ID = math.floor(view.index(ADDRESS) / repl_factor)
-    view = new_view.split(',')
-
+    view = new_view
     shards = build_shard_table(view,repl_factor)
-
     shard_map = new_shard_map
     # if we need to, notify all the other nodes of this view change
     if 'from_node' not in request.headers:
@@ -582,7 +583,7 @@ def viewChange():
             view_map.append({"shard-id": shard_map.index(shard), "key-count": count, "replicas": shard})
         return jsonify(message="View change successful", shards=view_map), 200
     else:
-        return "ok", 200
+        return jsonify(message="stfu"), 200
 
 #inserts a bunch of keys at once. Done during a view change. It is assumed that this is done only once, and all the keys have their vector clocks set to 0
 #expects the message body to be a JSON dict to be merged with the current dict, with the same structure
