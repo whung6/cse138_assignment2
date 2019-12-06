@@ -67,7 +67,7 @@ shard_index = 0
 
 
 #current shard map
-shard_map = []
+shard_map = [] 
 
 # if we're gonna do something that might screw up if gossip is running around like view change
 # (since gossips are on a different thread)
@@ -249,7 +249,7 @@ def putKey(keyname):
             return jsonify(message='Added successfully', replaced=False), 200
 
     else:
-        return forward_request_multiple(request, shard_map[bin])
+        return forward_request(request, shard_map[bin][0])
 
 
 
@@ -257,45 +257,75 @@ def putKey(keyname):
 # Get key
 @app.route('/kv-store/keys/<keyname>', methods=['GET'])
 def getKey(keyname):
-    bin = hash(keyname) % len(shard_map)
-    isUpdated = True
     
-    # Check if key already exists. If it does, find if the current context is the most updated one.
-    if keyname in d:
-        # Find if current context is the most updated one
-        for entry in log:
-            if entry[2] in d.keys():
-                tempContext = d[entry[2]]['context']
-            else:
-                tempContext = [0 for i in context[keyshard_ID]]
-                
-            if areContextLarger(entry[0], tempContext):
-                # gossip maybe?
-                continue
-            elif areContextConcurrent(entry[0], tempContext):
-                continue
-            else:
-                isUpdated = False
-                break
+    bin = hash(keyname) % len(view)
+    global event_counter
+    req = request.get_json()
+    tempContext = req['causal-context']
+    
+    # Check if key exists.
+    if keyname in d and d[keyname]['exists'] is True:
+         # Check client context and initialize if needed.
+        if tempContext == '' or len(tempContext) != len(context) or len(tempContext[0]) != len(context[0]):
+            tempContext = initialize_context()
+ 
+        # Violates causal causality as client context is greater.
+        if areContextLarger(tempContext[keyshard_ID], d[keyname]['context']):
+            tempContext[keyshard_ID] = context[keyshard_ID]
+            return jsonify(error = 'Unable to satisfy request.', message = 'Error in <HTTP Method.>'), 503
         
-        # If it is the most updated context we can return the most updated value
-        # If it is not the most updated context we return a NACK
-        if isUpdated is True:
-            payload = {"doesExist": True, "message": 'Retrieved successfully', "value": d[keyname]['value']}
+        # Return if client context is equal or smaller.
+        elif areContextLarger(tempContext[keyshard_ID], context[keyshard_ID]) or not areContextConcurrent(tempContext[keyshard_ID], context[keyshard_ID]):
+            payload = {"doesExist": True, "message": 'Retrieved successfully', "value": d[keyname]['value']} 
+            # Use our own context.
+            tempContext[keyshard_ID] = context[keyshard_ID]
+            d[keyname]['context'] = tempContext[keyshard_ID]
+            payload['causal-context'] = tempContext
             # If it's not directly from client, add the correct address
             if 'from_node' in request.headers:
                 payload['address'] = ADDRESS
+            # Update our vector clock.
             updateVectorClock()
+            # Update event counter.
+            event_counter = event_counter + 1
+            event_log.append([copy.deepcopy(context[keyshard_ID]), 'GET', keyname, event_counter, 'poop'])
+             # If it's not directly from client, add the correct address
+            if 'from_node' in request.headers:
+                payload['address'] = ADDRESS
             return jsonify(payload), 200
         else:
-            return jsonify(error='Unable to satisfy request.', message='Error in <HTTP Method.>')
+            pass
             
     else:
         if 'from_node' in request.headers:
+            # Node does not exist.
             return jsonify(doesExist=False, error='Key does not exist', message='Error in GET'), 404
-        # otherwise forward it to the right node
+        # Forward it to the right node.
         else:
-            return forward_request_multiple(request, shard_map[bin])
+            final_response = None
+            final_status_code = None
+            node_is_alive = False
+            # forward this to at least one node in destiny keyshard
+            for index in range(bin, len(view), int(len(view) / repl_factor)):
+                # try forwarding it
+                response, status_code = forward_request(request, view[index])
+                # if it succeeds
+                if status_code == 200:
+                    # just return it
+                    return response, status_code
+                # if it's key not found error, maybe they haven't gossiped yet
+                elif status_code == 404:
+                    # but record it anyways
+                    final_response = response
+                    final_status_code = status_code
+                    # and say that at least someone is alive
+                    node_is_alive = True
+            # if someone is alive, even if it doesn't succeed, return their response
+            if node_is_alive:
+                return final_response, final_status_code
+            # if all of the nodes failed, nak
+            else:
+                return jsonify({'message': 'Error in PUT', 'error': 'Unable to satisfy request'}), 503
 
 
 # Get shard (replicas not yet implemented)
@@ -373,7 +403,7 @@ def deleteKey(keyname):
         final_status_code = None
         node_is_alive = False
         # forward this to at least one node in destiny keyshard
-        for node in shard_map[bin]
+        for node in shard_map[bin]:
             # try forwarding it
             response, status_code = forward_request(request, node)
             # if it succeeds
@@ -538,9 +568,9 @@ def viewChange():
     new_view = req['view']
     new_repl_factor = int(req['repl_factor'])
     new_shard_map = []
-    for index in range(0,int(len(new_view)/new_repl_factor):
+    for index in range(0,int(len(new_view)/new_repl_factor)):
         new_shard_map[index] = view[index*repl_factor:(index+1)*repl_factor]
-    keyshard_ID = int(new_view.index(ADDRESS) % (len(view) / repl_factor))  # initialized to its index for post @188
+    keyshard_ID = math.floor((view.index(ADDRESS) / repl_factor))
     view = new_view.split(',')
 
     shards = build_shard_table(view,repl_factor)
@@ -634,18 +664,18 @@ def forward_request(request, node):
     if 'from_node' not in request.headers:
         # mark that this is forwarded from this node
         headers['from_node'] = ADDRESS
-        try:
-            response = requests.request(
-                method=request.method,
-                url=request.url.replace(request.host, node),
-                headers=headers,
-                data=request.get_data(),
-                timeout=20)
-            return response.json(), response.status_code
-        except ConnectionError:
-            return jsonify(error='Node ' + node + " is down", message='Error in ' + request.method), 503
-        except requests.exceptions.ConnectionError:
-            return jsonify(error='Node ' + node + " is down", message='Error in ' + request.method), 503
+    try:
+        response = requests.request(
+            method=request.method,
+            url=request.url.replace(request.host, node),
+            headers=headers,
+            data=request.get_data(),
+            timeout=20)
+        return response.json(), response.status_code
+    except ConnectionError:
+        return jsonify(error='Node ' + node + " is down", message='Error in ' + request.method), 503
+    except requests.exceptions.ConnectionError:
+        return jsonify(error='Node ' + node + " is down", message='Error in ' + request.method), 503
 
 #same as above, but tries each node in nodes until one of them responds
 def forward_request_multiple(request,nodes):
@@ -665,9 +695,10 @@ def forward_request_multiple(request,nodes):
                     timeout=20)
                 return response.json(), response.status_code
             except ConnectionError:
-                return jsonify(error='Node ' + node + " is down", message='Error in ' + request.method), 503
+                continue
             except requests.exceptions.ConnectionError:
-                return jsonify(error='Node ' + node + " is down", message='Error in ' + request.method), 503
+                continue
+        return "None of the nodes received the request",400
 
 
 @app.before_first_request
@@ -678,8 +709,8 @@ def before_first_request():
     scheduler.start()
     # initialize the acks dict
     if len(acks.keys()) < repl_factor - 1:
-        for node in shard_map[keyshard_ID]
-            if node != ADDRESS
+        for node in shard_map[keyshard_ID]:
+            if node != ADDRESS:
                 acks[str(view.index(node))] = -1
 
 def periodicGossip():
@@ -691,7 +722,7 @@ def periodicGossip():
         # if there's event to be sent and we're not doing something else
         if len(event_log) > 0 and shouldDoGossip:
             # for every node that is in the same keyshard as this node
-            for node in shard_map[keyshard_ID]
+            for node in shard_map[keyshard_ID]:
                 # if it's not this node
                 if node != ADDRESS:
                     # put the gossip request
@@ -712,9 +743,10 @@ if __name__ == "__main__":
     ADDRESS = sys.argv[1]
     view = sys.argv[2].split(',')
     repl_factor = int(sys.argv[3])
-    keyshard_ID = int(view.index(ADDRESS) % (len(view) / repl_factor))  # initialized to its index for post @188
+    keyshard_ID = math.floor((view.index(ADDRESS) / repl_factor))
+    
     for index in range(0,repl_factor):
-        shard_map[index] = view[index*repl_factor:(index+1)*repl_factor]
+        shard_map.append(view[index*repl_factor:(index+1)*repl_factor])
     node_ID = shard_map[keyshard_ID].index(ADDRESS)
     context = initialize_context()
 
