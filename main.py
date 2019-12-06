@@ -170,8 +170,6 @@ def put_replica(keyname):
     req = request.get_json()
     global event_counter
 
-    updateVectorClock()
-    event_counter = event_counter + 1
     event_log.append([copy.deepcopy(context[keyshard_ID]), 'PUT', keyname, event_counter, req.get('value')])
     
     if keyname in d:
@@ -229,8 +227,8 @@ def putKey(keyname):
 
             #this should send to each replica the new values
             send_replica(keyname)
-            return jsonify(message='Updated successfully', replaced=True,context = context), 200
-
+            return jsonify(message='Updated successfully', replaced=True,"causal-context" = context), 200
+            
         # Add new key
         else:
             #update compare vector clocks if client is newer then return that context and do nothing 
@@ -242,10 +240,10 @@ def putKey(keyname):
             #this should send to each replica the new values
             send_replica(keyname)
 
-            return jsonify(message='Added successfully', replaced=False, context = context), 200
+            return jsonify(message='Added successfully', replaced=False, "causal-context" = context), 200
 
     else:
-        return forward_request(request, shard_map[bin][0])
+        return forward_request_multiple(request, shard_map[bin])
 
 # Get key
 @app.route('/kv-store/keys/<keyname>', methods=['GET'])
