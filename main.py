@@ -224,7 +224,7 @@ def getAllShards():
     return jsonify(allShards), 200
      
 # Delete key
-#TODO: concurrnet request, immediate gossip
+#TODO: immediate gossip
 @app.route('/kv-store/keys/<keyname>', methods=['DELETE'])
 def deleteKey(keyname):
     # calculate the shard this index belongs to
@@ -239,23 +239,22 @@ def deleteKey(keyname):
         if tempContext == '' or len(tempContext) != len(context) or type(tempContext[0]) is not list or len(tempContext[0]) != len(context[0]) or type(tempContext[0][0]) is not int:
             # treat it as a 0 context
             tempContext = initialize_context()
-        # if this key exist
+        # if client's context is strictly larger than ours
         if areContextStrictlyLarger(tempContext[keyshard_ID], context[keyshard_ID]):
             tempContext[keyshard_ID] = context[keyshard_ID]
             # refuse to serve: we do not know what other things does the client know about and could
             # possibly violate causality, so we give them OUR most-updated context
             return json.dumps({'message': 'Error in PUT', 'error': 'Unable to satisfy request',
                                'causal-context': tempContext}), 503
-        # if client's context is strictly larger than ours
-        # if it's equal or smaller, that means we can serve them
-        elif areContextLarger(tempContext[keyshard_ID], context[keyshard_ID]) or not areContextConcurrent(
-                tempContext[keyshard_ID], context[keyshard_ID]):
+        # if it's equal or smaller or concurrent
+        else:
+            # if this key exist
             if keyname in d.keys() and d[keyname]['exist']:
                 # update our own vector clock
                 updateVectorClock()
                 # make this key not exist
                 d[keyname]['exist'] = False
-                # since it's equal or smaller, just use our context
+                # just use our context
                 tempContext[keyshard_ID] = context[keyshard_ID]
                 # update the key's context in d
                 d[keyname]['context'] = tempContext[keyshard_ID]
@@ -271,10 +270,9 @@ def deleteKey(keyname):
             else:
                 tempContext[keyshard_ID] = context[keyshard_ID]
                 # this does not exist
-                return jsonify(doesExist=False, error='Key does not exist', message='Error in DELETE', context=tempContext), 404
-        # it's concurrent
-        else:
-            pass
+                return jsonify(doesExist=False, error='Key does not exist', message='Error in DELETE',
+                               context=tempContext), 404
+
     else:
         # for all node that is in the destination keyshard
         final_response = None
@@ -506,18 +504,18 @@ def forward_request(request, node):
     if 'from_node' not in request.headers:
         # mark that this is forwarded from this node
         headers['from_node'] = ADDRESS
-        try:
-            response = requests.request(
-                method=request.method,
-                url=request.url.replace(request.host, node),
-                headers=headers,
-                data=request.get_data(),
-                timeout=20)
-            return response.json(), response.status_code
-        except ConnectionError:
-            return jsonify(error='Node ' + node + " is down", message='Error in ' + request.method), 503
-        except requests.exceptions.ConnectionError:
-            return jsonify(error='Node ' + node + " is down", message='Error in ' + request.method), 503
+    try:
+        response = requests.request(
+            method=request.method,
+            url=request.url.replace(request.host, node),
+            headers=headers,
+            data=request.get_data(),
+            timeout=20)
+        return response.json(), response.status_code
+    except ConnectionError:
+        return jsonify(error='Node ' + node + " is down", message='Error in ' + request.method), 503
+    except requests.exceptions.ConnectionError:
+        return jsonify(error='Node ' + node + " is down", message='Error in ' + request.method), 503
 
 @app.before_first_request
 def before_first_request():
