@@ -478,7 +478,7 @@ def viewChange():
     new_view = req['view']
     new_repl_factor = int(req['repl_factor'])
     new_shard_map = []
-    for index in range(0,repl_factor):
+    for index in range(0,math.floor(len(view)/repl_factor)):
         new_shard_map.append(view[index*repl_factor:(index+1)*repl_factor])
     keyshard_ID = math.floor(view.index(ADDRESS) / repl_factor)
     view = new_view.split(',')
@@ -651,7 +651,7 @@ if __name__ == "__main__":
     view = sys.argv[2].split(',')
     repl_factor = int(sys.argv[3])
     keyshard_ID = math.floor(view.index(ADDRESS) / repl_factor)
-    for index in range(0,repl_factor):
+    for index in range(0,math.floor(len(view)/repl_factor)):
         shard_map.append(view[index*repl_factor:(index+1)*repl_factor])
     node_ID = shard_map[keyshard_ID].index(ADDRESS)
     context = initialize_context()
