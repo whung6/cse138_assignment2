@@ -20,13 +20,6 @@ d = {}
 # Node's address
 ADDRESS = ""
 
-# the vector clock index in context, add 1 if used as ID
-# view.index(ADDRESS) + 1 % repl_factor
-keyhard_ID = 0
-
-# the column of this node in the vector clock
-# math.floor((view.index(ADDRESS) + 1) / repl_factor) - 1
-# need to manually set to 0 if repl_factor = 1
 # the vector clock index in context, add 1 if used as keyshard ID
 # view.index(ADDRESS) % (len(view) / repl_factor)
 keyshard_ID = 0
@@ -64,7 +57,7 @@ shards = []
 #the index where this shard lies 
 shard_index = 0
 
-
+testString = ""
 
 #current shard map
 shard_map = [] 
@@ -90,11 +83,10 @@ def initialize_context():
 #calculate which shard a particular key is in by hash(key) % len(shards)
 #note: this is a pure function and does _not_ set shards, use its output
 def build_shard_table(v,n_shards):
-    s = [0]*(len(v)-1) #return value 
-    for i in range(0,len(v)-1,n_shards):
-        
-        s[i] = v[i:i+n_shards] #just smush each block of n_shards nodes into the thing. Since views are always in the same order this works.
-    print(s)
+    s = []
+    for i in range(0,len(v),n_shards):
+        s.append(v[i:i+n_shards])#just smush each block of n_shards nodes into the thing. Since views are always in the same order this works.
+
     return s
 def find_shard_index(shardList):
     for i in range(len(shardList)):
@@ -163,8 +155,10 @@ def send_replica(key):
                                 headers={'from_node': ADDRESS, "Content-Type": "application/json"},
                                 data="{\"value\": \"" + d[key]['value'] + "\"}")
             except ConnectionError:
-            
+                return jsonify(error='Node ' + shard_address + " is down", message='Error in ' + request.method), 503
             except requests.exceptions.ConnectionError:
+                return jsonify(error='Node ' + shard_address + " is down", message='Error in ' + request.method), 503
+
     return 1
 
 @app.route("/")
@@ -231,7 +225,7 @@ def putKey(keyname):
             return jsonify(error='value is missing', message='Error in PUT'), 400
 
         # Check if key already exists
-        if keyname in d.keys():
+        if keyname in d.keys() and d[keyname]['exist']:
             d[keyname]['value'] = req.get('value')
             d[keyname]['context'] = copy.deepcopy(context[keyshard_ID])
 
@@ -264,8 +258,8 @@ def getKey(keyname):
     req = request.get_json()
     tempContext = req['causal-context']
     
-    # Check if key exists.
-    if keyname in d.keys() and d[keyname]['exists'] is True:
+    # Check if correct bin.
+    if bin == keyshard_ID:
         # Check client context and initialize if needed.
         if tempContext == '' or len(tempContext) != len(context) or len(tempContext[0]) != len(context[0]):
             tempContext = initialize_context()
@@ -274,28 +268,27 @@ def getKey(keyname):
         if areContextStrictlyLarger(tempContext[keyshard_ID], context[keyshard_ID]):
             tempContext[keyshard_ID] = context[keyshard_ID]
             return jsonify(error = 'Unable to satisfy request.', message = 'Error in GET'), 503
-        
         # Return if client context is equal or smaller.
-        elif areContextLarger(tempContext[keyshard_ID], context[keyshard_ID]) or not areContextConcurrent(tempContext[keyshard_ID], context[keyshard_ID]):
-            payload = {"doesExist": True, "message": 'Retrieved successfully', "value": d[keyname]['value']} 
-            tempContext[keyshard_ID] = context[keyshard_ID]
-            d[keyname]['context'] = tempContext[keyshard_ID]
-            payload['causal-context'] = tempContext
-            # If it's not directly from client, add the correct address
-            if 'from_node' in request.headers:
-                payload['address'] = ADDRESS
-            # Update our vector clock.
-            updateVectorClock()
-            # Update event counter.
-            event_counter = event_counter + 1
-            event_log.append([copy.deepcopy(context[keyshard_ID]), 'GET', keyname, event_counter, req.get('value')])
-             # If it's not directly from client, add the correct address
-            if 'from_node' in request.headers:
-                payload['address'] = ADDRESS
-            return jsonify(payload), 200
         else:
-            pass
-            
+            # Check if key exists.
+            if keyname in d.keys() and d[keyname]['exist'] is True:
+                payload = {"doesExist": True, "message": 'Retrieved successfully', "value": d[keyname]['value']} 
+                # If it's not directly from client, add the correct address
+                if 'from_node' in request.headers:
+                    payload['address'] = ADDRESS
+                tempContext[keyshard_ID] = context[keyshard_ID]
+                d[keyname]['context'] = tempContext[keyshard_ID]
+                payload['causal-context'] = tempContext
+                # Update our vector clock.
+                updateVectorClock()
+                # Update event counter.
+                event_counter = event_counter + 1
+                event_log.append([copy.deepcopy(context[keyshard_ID]), 'GET', keyname, event_counter, req.get('value')])
+                return jsonify(payload), 200     
+            else:
+                tempContext[keyshard_ID] = context[keyshard_ID]
+                # Node does not exist.
+                return jsonify(doesExist=False, error='Key does not exist', message='Error in GET'), 404
     else:
         if 'from_node' in request.headers:
             # Node does not exist.
@@ -328,14 +321,18 @@ def getKey(keyname):
                 return jsonify(error = 'Unable to satisfy request.', message = 'Error in GET'), 503
 
 
-# Get shard (replicas not yet implemented)
+# Get shard 
 @app.route('/kv-store/shards/<id>', methods=['GET'])
 def getShard(id):
     bin = int(id)
     if bin < 0 or bin >= len(shard_map):
         return jsonify({"message": "Node does not exist"})
     if bin == keyshard_ID:
-        return jsonify({"message": 'Shard information retrieved successfully', "shard-id": bin, "key-count": len(d), "causal-context": jsonify({"c": context}), "replicas": shard_map[bin]})
+        counter = 0
+        for key in d.keys():
+            if d[key]['exists']:
+                counter = counter + 1
+        return jsonify({"message": 'Shard information retrieved successfully', "shard-id": bin, "key-count": counter, "causal-context": jsonify({"c": context}), "replicas": shard_map[bin]})
     else:
         return forward_request_multiple(request, shard_map[bin])
 
@@ -346,7 +343,7 @@ def getAllShards():
     return jsonify({"message": 'Shard information retrieved successfully', "causal-context": context, "shard-ids": range(0,len(shard_map))}),200
      
 # Delete key
-#TODO: concurrnet request, immediate gossip
+#TODO: immediate gossip
 @app.route('/kv-store/keys/<keyname>', methods=['DELETE'])
 def deleteKey(keyname):
     # calculate the shard this index belongs to
@@ -361,23 +358,22 @@ def deleteKey(keyname):
         if tempContext == '' or len(tempContext) != len(context) or type(tempContext[0]) is not list or len(tempContext[0]) != len(context[0]) or type(tempContext[0][0]) is not int:
             # treat it as a 0 context
             tempContext = initialize_context()
-        # if this key exist
+        # if client's context is strictly larger than ours
         if areContextStrictlyLarger(tempContext[keyshard_ID], context[keyshard_ID]):
             tempContext[keyshard_ID] = context[keyshard_ID]
             # refuse to serve: we do not know what other things does the client know about and could
             # possibly violate causality, so we give them OUR most-updated context
             return json.dumps({'message': 'Error in PUT', 'error': 'Unable to satisfy request',
                                'causal-context': tempContext}), 503
-        # if client's context is strictly larger than ours
-        # if it's equal or smaller, that means we can serve them
-        elif areContextLarger(tempContext[keyshard_ID], context[keyshard_ID]) or not areContextConcurrent(
-                tempContext[keyshard_ID], context[keyshard_ID]):
+        # if it's equal or smaller or concurrent
+        else:
+            # if this key exist
             if keyname in d.keys() and d[keyname]['exist']:
                 # update our own vector clock
                 updateVectorClock()
                 # make this key not exist
                 d[keyname]['exist'] = False
-                # since it's equal or smaller, just use our context
+                # just use our context
                 tempContext[keyshard_ID] = context[keyshard_ID]
                 # update the key's context in d
                 d[keyname]['context'] = tempContext[keyshard_ID]
@@ -393,10 +389,9 @@ def deleteKey(keyname):
             else:
                 tempContext[keyshard_ID] = context[keyshard_ID]
                 # this does not exist
-                return jsonify(doesExist=False, error='Key does not exist', message='Error in DELETE', context=tempContext), 404
-        # it's concurrent
-        else:
-            pass
+                return jsonify(doesExist=False, error='Key does not exist', message='Error in DELETE',
+                               context=tempContext), 404
+
     else:
         # for all node that is in the destination keyshard
         final_response = None
@@ -536,7 +531,7 @@ def debug():
         return "\nd\t" + str(Poop(d)) + "\nevent log\t" + str(event_log) + \
                "\ncontext\t" + str(context) + "\nacks\t" + \
                str(acks) + "\nkeyshard_ID\t" + str(keyshard_ID) + "\nnode_ID\t" + str(node_ID) + \
-               "\nevent_counter\t" + str(event_counter) + "\nview\t" + str(view)
+               "\nevent_counter\t" + str(event_counter) + "\nview\t" + str(view) + "\ntest-string\t" + testString
 
 
 # acks of periodic gossip
@@ -571,10 +566,8 @@ def viewChange():
     for index in range(0,math.floor(len(view)/repl_factor)):
         new_shard_map.append(view[index*repl_factor:(index+1)*repl_factor])
     keyshard_ID = math.floor(view.index(ADDRESS) / repl_factor)
-    view = new_view.split(',')
-
+    view = new_view
     shards = build_shard_table(view,repl_factor)
-
     shard_map = new_shard_map
     # if we need to, notify all the other nodes of this view change
     if 'from_node' not in request.headers:
@@ -596,7 +589,7 @@ def viewChange():
             view_map.append({"shard-id": shard_map.index(shard), "key-count": count, "replicas": shard})
         return jsonify(message="View change successful", shards=view_map), 200
     else:
-        return "ok", 200
+        return jsonify(message="stfu"), 200
 
 #inserts a bunch of keys at once. Done during a view change. It is assumed that this is done only once, and all the keys have their vector clocks set to 0
 #expects the message body to be a JSON dict to be merged with the current dict, with the same structure
@@ -676,8 +669,6 @@ def forward_request(request, node):
         return jsonify(error='Node ' + node + " is down", message='Error in ' + request.method), 503
 
     except requests.exceptions.ConnectionError:
-        return jsonify(error='Node ' + node + " is down", message='Error in ' + request.method), 503
-
         return jsonify(error='Node ' + node + " is down", message='Error in ' + request.method), 503
 
 #same as above, but tries each node in nodes until one of them responds
