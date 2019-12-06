@@ -237,7 +237,7 @@ def putKey(keyname):
 
             #this should send to each replica the new values
             send_replica(keyname)
-            return jsonify(message='Updated successfully', replaced=True), 200
+            return jsonify(message='Updated successfully', replaced=True,context = context), 200
 
         # Add new key
         else:
@@ -250,7 +250,7 @@ def putKey(keyname):
             #this should send to each replica the new values
             send_replica(keyname)
 
-            return jsonify(message='Added successfully', replaced=False), 200
+            return jsonify(message='Added successfully', replaced=False, context = context), 200
 
     else:
         return forward_request(request, shard_map[bin][0])
