@@ -568,9 +568,9 @@ def viewChange():
     new_view = req['view']
     new_repl_factor = int(req['repl_factor'])
     new_shard_map = []
-    for index in range(0,int(len(new_view)/new_repl_factor)):
-        new_shard_map[index] = view[index*repl_factor:(index+1)*repl_factor]
-    keyshard_ID = math.floor((view.index(ADDRESS) / repl_factor))
+    for index in range(0,math.floor(len(view)/repl_factor)):
+        new_shard_map.append(view[index*repl_factor:(index+1)*repl_factor])
+    keyshard_ID = math.floor(view.index(ADDRESS) / repl_factor)
     view = new_view.split(',')
 
     shards = build_shard_table(view,repl_factor)
@@ -685,20 +685,20 @@ def forward_request_multiple(request,nodes):
     if 'from_node' not in request.headers:
         # mark that this is forwarded from this node
         headers['from_node'] = ADDRESS
-        for node in nodes:
-            try:
-                response = requests.request(
-                    method=request.method,
-                    url=request.url.replace(request.host, node),
-                    headers=headers,
-                    data=request.get_data(),
-                    timeout=20)
-                return response.json(), response.status_code
-            except ConnectionError:
-                continue
-            except requests.exceptions.ConnectionError:
-                continue
-        return "None of the nodes received the request",400
+    for node in nodes:
+        try:
+            response = requests.request(
+                method=request.method,
+                url=request.url.replace(request.host, node),
+                headers=headers,
+                data=request.get_data(),
+                timeout=20)
+            return response.json(), response.status_code
+        except ConnectionError:
+            continue
+        except requests.exceptions.ConnectionError:
+            continue
+    return "None of the nodes received the request",400
 
 
 @app.before_first_request
@@ -743,9 +743,8 @@ if __name__ == "__main__":
     ADDRESS = sys.argv[1]
     view = sys.argv[2].split(',')
     repl_factor = int(sys.argv[3])
-    keyshard_ID = math.floor((view.index(ADDRESS) / repl_factor))
-    
-    for index in range(0,repl_factor):
+    keyshard_ID = math.floor(view.index(ADDRESS) / repl_factor)
+    for index in range(0,math.floor(len(view)/repl_factor)):
         shard_map.append(view[index*repl_factor:(index+1)*repl_factor])
     node_ID = shard_map[keyshard_ID].index(ADDRESS)
     context = initialize_context()
