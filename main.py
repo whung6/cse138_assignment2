@@ -51,9 +51,6 @@ acks = {}
 # Current view
 view = []
 
-#the index where this shard lies 
-shard_index = 0
-
 testString = ""
 
 #current shard map
@@ -149,7 +146,7 @@ def xordist_get_addr(key):
     return addr_min
 
 def send_replica(key):
-    for shard_address in shard_map[shard_index]:
+    for shard_address in shard_map[keyshard_ID]:
         if(shard_address != ADDRESS):
              requests.put(url="http://" + shard_address + "/kv-store/keys_replica/" + key,
                              headers={'from_node': ADDRESS, "Content-Type": "application/json"},
@@ -531,7 +528,7 @@ def debug():
                "\ncontext\t" + str(context) + "\nacks\t" + \
                str(acks) + "\nkeyshard_ID\t" + str(keyshard_ID) + "\nnode_ID\t" + str(node_ID) + \
                "\nevent_counter\t" + str(event_counter) + "\nview\t" + str(view)  + "\nshard_map\t" + str(shard_map) + \
-               "\nshard_id\t" + str(shard_index) + "\npartial partition list\t" + str(partialPartitionList) +\
+               "\npartial partition list\t" + str(partialPartitionList) +\
                "\ntest-string\t" + testString
 
 
