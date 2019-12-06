@@ -450,7 +450,7 @@ def viewChange():
     new_shard_map = []
     for index in range(0,int(len(new_view)/new_repl_factor):
         new_shard_map[index] = view[index*repl_factor:(index+1)*repl_factor]
-    keyshard_ID = int(new_view.index(ADDRESS) % (len(view) / repl_factor))  # initialized to its index for post @188
+    keyshard_ID = math.floor((view.index(ADDRESS) / repl_factor)
     view = new_view.split(',')
     shard_map = new_shard_map
     # if we need to, notify all the other nodes of this view change
@@ -620,7 +620,7 @@ if __name__ == "__main__":
     ADDRESS = sys.argv[1]
     view = sys.argv[2].split(',')
     repl_factor = int(sys.argv[3])
-    keyshard_ID = int(view.index(ADDRESS) % (len(view) / repl_factor))  # initialized to its index for post @188
+    keyshard_ID = math.floor((view.index(ADDRESS) / repl_factor)
     for index in range(0,repl_factor):
         shard_map[index] = view[index*repl_factor:(index+1)*repl_factor]
     node_ID = shard_map[keyshard_ID].index(ADDRESS)
