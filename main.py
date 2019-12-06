@@ -283,7 +283,7 @@ def deleteKey(keyname):
         final_status_code = None
         node_is_alive = False
         # forward this to at least one node in destiny keyshard
-        for node in shard_map[bin]
+        for node in shard_map[bin]:
             # try forwarding it
             response, status_code = forward_request(request, node)
             # if it succeeds
@@ -448,9 +448,9 @@ def viewChange():
     new_view = req['view']
     new_repl_factor = int(req['repl_factor'])
     new_shard_map = []
-    for index in range(0,int(len(new_view)/new_repl_factor):
-        new_shard_map[index] = view[index*repl_factor:(index+1)*repl_factor]
-    keyshard_ID = math.floor((view.index(ADDRESS) / repl_factor)
+    for index in range(0,repl_factor):
+        new_shard_map.append(view[index*repl_factor:(index+1)*repl_factor])
+    keyshard_ID = math.floor(view.index(ADDRESS) / repl_factor)
     view = new_view.split(',')
     shard_map = new_shard_map
     # if we need to, notify all the other nodes of this view change
@@ -586,8 +586,8 @@ def before_first_request():
     scheduler.start()
     # initialize the acks dict
     if len(acks.keys()) < repl_factor - 1:
-        for node in shard_map[keyshard_ID]
-            if node != ADDRESS
+        for node in shard_map[keyshard_ID]:
+            if node != ADDRESS:
                 acks[str(view.index(node))] = -1
 
 def periodicGossip():
@@ -599,7 +599,7 @@ def periodicGossip():
         # if there's event to be sent and we're not doing something else
         if len(event_log) > 0 and shouldDoGossip:
             # for every node that is in the same keyshard as this node
-            for node in shard_map[keyshard_ID]
+            for node in shard_map[keyshard_ID]:
                 # if it's not this node
                 if node != ADDRESS:
                     # put the gossip request
@@ -620,9 +620,9 @@ if __name__ == "__main__":
     ADDRESS = sys.argv[1]
     view = sys.argv[2].split(',')
     repl_factor = int(sys.argv[3])
-    keyshard_ID = math.floor((view.index(ADDRESS) / repl_factor)
+    keyshard_ID = math.floor(view.index(ADDRESS) / repl_factor)
     for index in range(0,repl_factor):
-        shard_map[index] = view[index*repl_factor:(index+1)*repl_factor]
+        shard_map.append(view[index*repl_factor:(index+1)*repl_factor])
     node_ID = shard_map[keyshard_ID].index(ADDRESS)
     context = initialize_context()
     app.run(host='0.0.0.0', port=13800)
