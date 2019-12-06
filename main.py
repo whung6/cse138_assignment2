@@ -159,7 +159,7 @@ def putKey(keyname):
             return jsonify(message='Added successfully', replaced=False), 200
 
     else:
-        return forward_request(request, random.choice(shard[bin]))
+        return forward_request_multiple(request, shard_map[bin])
 
 
 
@@ -205,7 +205,7 @@ def getKey(keyname):
             return jsonify(doesExist=False, error='Key does not exist', message='Error in GET'), 404
         # otherwise forward it to the right node
         else:
-            return forward_request(request, random.choice(shard_map[bin]))
+            return forward_request_multiple(request, shard_map[bin])
 
 
 # Get shard (replicas not yet implemented)
@@ -217,7 +217,7 @@ def getShard(id):
     if bin == keyshard_ID:
         return jsonify({"message": 'Shard information retrieved successfully', "shard-id": bin, "key-count": len(d), "causal-context": jsonify({"c": context}), "replicas": shard_map[bin]})
     else:
-        return forward_request(request, random.choice(shard_map[bin]))
+        return forward_request_multiple(request, shard_map[bin])
 
 
 # Get all shards
@@ -553,6 +553,29 @@ def forward_request(request, node):
             return jsonify(error='Node ' + node + " is down", message='Error in ' + request.method), 503
         except requests.exceptions.ConnectionError:
             return jsonify(error='Node ' + node + " is down", message='Error in ' + request.method), 503
+
+#same as above, but tries each node in nodes until one of them responds
+def forward_request_multiple(request,nodes):
+    # get the headers since request is immutable
+    headers = {key: value for (key, value) in request.headers}
+    # if it's not from another node but needs to be forwarded
+    if 'from_node' not in request.headers:
+        # mark that this is forwarded from this node
+        headers['from_node'] = ADDRESS
+        for node in nodes:
+            try:
+                response = requests.request(
+                    method=request.method,
+                    url=request.url.replace(request.host, node),
+                    headers=headers,
+                    data=request.get_data(),
+                    timeout=20)
+                return response.json(), response.status_code
+            except ConnectionError:
+                return jsonify(error='Node ' + node + " is down", message='Error in ' + request.method), 503
+            except requests.exceptions.ConnectionError:
+                return jsonify(error='Node ' + node + " is down", message='Error in ' + request.method), 503
+
 
 @app.before_first_request
 def before_first_request():
