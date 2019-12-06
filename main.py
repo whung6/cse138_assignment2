@@ -158,9 +158,13 @@ def xordist_get_addr(key):
 def send_replica(key):
     for shard_address in shards[shard_index]:
         if(shard_address != ADDRESS):
-             requests.put(url="http://" + shard_address + "/kv-store/keys_replica/" + key,
-                             headers={'from_node': ADDRESS, "Content-Type": "application/json"},
-                             data="{\"value\": \"" + d[key]['value'] + "\"}")
+            try:
+                requests.put(url="http://" + shard_address + "/kv-store/keys_replica/" + key,
+                                headers={'from_node': ADDRESS, "Content-Type": "application/json"},
+                                data="{\"value\": \"" + d[key]['value'] + "\"}")
+            except ConnectionError:
+            
+            except requests.exceptions.ConnectionError:
     return 1
 
 @app.route("/")
@@ -250,12 +254,6 @@ def putKey(keyname):
 
     else:
         return forward_request(request, shard_map[bin][0])
-<<<<<<< HEAD
-
-
-
-=======
->>>>>>> d5c249b13beead2f6f74e216dd3d8a737360b7ad
 
 # Get key
 @app.route('/kv-store/keys/<keyname>', methods=['GET'])
@@ -676,7 +674,10 @@ def forward_request(request, node):
         return response.json(), response.status_code
     except ConnectionError:
         return jsonify(error='Node ' + node + " is down", message='Error in ' + request.method), 503
+
     except requests.exceptions.ConnectionError:
+        return jsonify(error='Node ' + node + " is down", message='Error in ' + request.method), 503
+
         return jsonify(error='Node ' + node + " is down", message='Error in ' + request.method), 503
 
 #same as above, but tries each node in nodes until one of them responds
