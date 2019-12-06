@@ -571,18 +571,18 @@ def forward_request(request, node):
     if 'from_node' not in request.headers:
         # mark that this is forwarded from this node
         headers['from_node'] = ADDRESS
-        try:
-            response = requests.request(
-                method=request.method,
-                url=request.url.replace(request.host, node),
-                headers=headers,
-                data=request.get_data(),
-                timeout=20)
-            return response.json(), response.status_code
-        except ConnectionError:
-            return jsonify(error='Node ' + node + " is down", message='Error in ' + request.method), 503
-        except requests.exceptions.ConnectionError:
-            return jsonify(error='Node ' + node + " is down", message='Error in ' + request.method), 503
+    try:
+        response = requests.request(
+            method=request.method,
+            url=request.url.replace(request.host, node),
+            headers=headers,
+            data=request.get_data(),
+            timeout=20)
+        return response.json(), response.status_code
+    except ConnectionError:
+        return jsonify(error='Node ' + node + " is down", message='Error in ' + request.method), 503
+    except requests.exceptions.ConnectionError:
+        return jsonify(error='Node ' + node + " is down", message='Error in ' + request.method), 503
 
 #same as above, but tries each node in nodes until one of them responds
 def forward_request_multiple(request,nodes):
@@ -592,20 +592,20 @@ def forward_request_multiple(request,nodes):
     if 'from_node' not in request.headers:
         # mark that this is forwarded from this node
         headers['from_node'] = ADDRESS
-        for node in nodes:
-            try:
-                response = requests.request(
-                    method=request.method,
-                    url=request.url.replace(request.host, node),
-                    headers=headers,
-                    data=request.get_data(),
-                    timeout=20)
-                return response.json(), response.status_code
-            except ConnectionError:
-                continue
-            except requests.exceptions.ConnectionError:
-                continue
-        return "None of the nodes received the request",400
+    for node in nodes:
+        try:
+            response = requests.request(
+                method=request.method,
+                url=request.url.replace(request.host, node),
+                headers=headers,
+                data=request.get_data(),
+                timeout=20)
+            return response.json(), response.status_code
+        except ConnectionError:
+            continue
+        except requests.exceptions.ConnectionError:
+            continue
+    return "None of the nodes received the request",400
 
 
 @app.before_first_request
