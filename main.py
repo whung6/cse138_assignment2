@@ -442,13 +442,15 @@ def ackReceived(index):
 def viewChange():
     global view
     global shard_map
+    global keyshard_ID
     shouldDoGossip = False #turn off gossip until we are done
     req = request.get_json()
     new_view = req['view']
-    new_repl_factor = req['repl_factor']
+    new_repl_factor = int(req['repl_factor'])
     new_shard_map = []
     for index in range(0,int(len(new_view)/new_repl_factor):
         new_shard_map[index] = view[index*repl_factor:(index+1)*repl_factor]
+    keyshard_ID = int(new_view.index(ADDRESS) % (len(view) / repl_factor))  # initialized to its index for post @188
     view = new_view.split(',')
     shard_map = new_shard_map
     # if we need to, notify all the other nodes of this view change
