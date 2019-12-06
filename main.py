@@ -330,15 +330,19 @@ def getShard(id):
         for key in d.keys():
             if d[key]['exists']:
                 counter = counter + 1
-        return jsonify({"message": 'Shard information retrieved successfully', "shard-id": bin, "key-count": counter, "causal-context": jsonify({"c": context}), "replicas": shard_map[bin]})
+        return jsonify({"message": 'Shard information retrieved successfully', "shard-id": bin, "key-count": counter, "causal-context": context, "replicas": shard_map[bin]})
     else:
         return forward_request_multiple(request, shard_map[bin])
-
 
 # Get all shards
 @app.route('/kv-store/shards', methods=['GET'])
 def getAllShards():
-    return jsonify({"message": 'Shard information retrieved successfully', "causal-context": context, "shard-ids": range(0,len(shard_map))}),200
+    listOfShards = []
+    shardID = 0
+    for bin in shard_map:
+        listOfShards.append(shardID)
+        shardID = shardID + 1
+    return jsonify({"message": 'Shard information retrieved successfully', "causal-context": context, "shard-ids": listOfShards}),200
      
 # Delete key
 #TODO: immediate gossip
