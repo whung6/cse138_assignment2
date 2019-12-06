@@ -253,8 +253,8 @@ def getKey(keyname):
     req = request.get_json()
     tempContext = req['causal-context']
     
-    # Check if key exists.
-    if keyname in d.keys() and d[keyname]['exists'] is True:
+    # Check if correct bin.
+    if bin == keyshard_ID:
         # Check client context and initialize if needed.
         if tempContext == '' or len(tempContext) != len(context) or len(tempContext[0]) != len(context[0]):
             tempContext = initialize_context()
@@ -263,28 +263,27 @@ def getKey(keyname):
         if areContextStrictlyLarger(tempContext[keyshard_ID], context[keyshard_ID]):
             tempContext[keyshard_ID] = context[keyshard_ID]
             return jsonify(error = 'Unable to satisfy request.', message = 'Error in GET'), 503
-        
         # Return if client context is equal or smaller.
-        elif areContextLarger(tempContext[keyshard_ID], context[keyshard_ID]) or not areContextConcurrent(tempContext[keyshard_ID], context[keyshard_ID]):
-            payload = {"doesExist": True, "message": 'Retrieved successfully', "value": d[keyname]['value']} 
-            tempContext[keyshard_ID] = context[keyshard_ID]
-            d[keyname]['context'] = tempContext[keyshard_ID]
-            payload['causal-context'] = tempContext
-            # If it's not directly from client, add the correct address
-            if 'from_node' in request.headers:
-                payload['address'] = ADDRESS
-            # Update our vector clock.
-            updateVectorClock()
-            # Update event counter.
-            event_counter = event_counter + 1
-            event_log.append([copy.deepcopy(context[keyshard_ID]), 'GET', keyname, event_counter, req.get('value')])
-             # If it's not directly from client, add the correct address
-            if 'from_node' in request.headers:
-                payload['address'] = ADDRESS
-            return jsonify(payload), 200
         else:
-            pass
-            
+            # Check if key exists.
+            if keyname in d.keys() and d[keyname]['exist'] is True:
+                payload = {"doesExist": True, "message": 'Retrieved successfully', "value": d[keyname]['value']} 
+                # If it's not directly from client, add the correct address
+                if 'from_node' in request.headers:
+                    payload['address'] = ADDRESS
+                tempContext[keyshard_ID] = context[keyshard_ID]
+                d[keyname]['context'] = tempContext[keyshard_ID]
+                payload['causal-context'] = tempContext
+                # Update our vector clock.
+                updateVectorClock()
+                # Update event counter.
+                event_counter = event_counter + 1
+                event_log.append([copy.deepcopy(context[keyshard_ID]), 'GET', keyname, event_counter, req.get('value')])
+                return jsonify(payload), 200     
+            else:
+                tempContext[keyshard_ID] = context[keyshard_ID]
+                # Node does not exist.
+                return jsonify(doesExist=False, error='Key does not exist', message='Error in GET'), 404
     else:
         if 'from_node' in request.headers:
             # Node does not exist.
@@ -317,7 +316,7 @@ def getKey(keyname):
                 return jsonify(error = 'Unable to satisfy request.', message = 'Error in GET'), 503
 
 
-# Get shard (replicas not yet implemented)
+# Get shard 
 @app.route('/kv-store/shards/<id>', methods=['GET'])
 def getShard(id):
     bin = int(id)
