@@ -261,7 +261,7 @@ def getKey(keyname):
     tempContext = req['causal-context']
     
     # Check if key exists.
-    if keyname in d and d[keyname]['exists'] is True:
+    if keyname in d.keys() and d[keyname]['exists'] is True:
         # Check client context and initialize if needed.
         if tempContext == '' or len(tempContext) != len(context) or len(tempContext[0]) != len(context[0]):
             tempContext = initialize_context()
@@ -269,7 +269,7 @@ def getKey(keyname):
         # Violates causal causality as client context is greater.
         if areContextStrictlyLarger(tempContext[keyshard_ID], context[keyshard_ID]):
             tempContext[keyshard_ID] = context[keyshard_ID]
-            return jsonify(error = 'Unable to satisfy request.', message = 'Error in <HTTP Method.>'), 503
+            return jsonify(error = 'Unable to satisfy request.', message = 'Error in GET'), 503
         
         # Return if client context is equal or smaller.
         elif areContextLarger(tempContext[keyshard_ID], context[keyshard_ID]) or not areContextConcurrent(tempContext[keyshard_ID], context[keyshard_ID]):
@@ -284,7 +284,7 @@ def getKey(keyname):
             updateVectorClock()
             # Update event counter.
             event_counter = event_counter + 1
-            event_log.append([copy.deepcopy(context[keyshard_ID]), 'GET', keyname, event_counter, 'poop'])
+            event_log.append([copy.deepcopy(context[keyshard_ID]), 'GET', keyname, event_counter, req.get('value')])
              # If it's not directly from client, add the correct address
             if 'from_node' in request.headers:
                 payload['address'] = ADDRESS
@@ -321,7 +321,7 @@ def getKey(keyname):
                 return final_response, final_status_code
             # if all of the nodes failed, nak
             else:
-                return jsonify({'message': 'Error in PUT', 'error': 'Unable to satisfy request'}), 503
+                return jsonify(error = 'Unable to satisfy request.', message = 'Error in GET'), 503
 
 
 # Get shard (replicas not yet implemented)
