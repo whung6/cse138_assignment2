@@ -339,12 +339,25 @@ def getShard(id):
     if bin == keyshard_ID:
         counter = 0
         for key in d.keys():
-            if d[key]['exists']:
+            if d[key]['exist']:
                 counter = counter + 1
         return jsonify({"message": 'Shard information retrieved successfully', "shard-id": bin, "key-count": counter, "causal-context": context, "replicas": shard_map[bin]})
     else:
         return forward_request_multiple(request, shard_map[bin])
 
+# Get all shards 
+@app.route('/kv-store/shards', methods=['GET'])
+def getallShards():
+    shardList = []
+    for shard in shard_map:
+        try:
+            response = requests.get(url="http://" + shard[0])
+        except Exception:
+            return "Node " + shard[0] + " did not respond to a request for its membership", 400
+        shardList.append(shard_map.index(shard))
+    return jsonify({"message": 'Shard membership retrieved successfully', "causal-context": context, "shards": shardList})
+    
+    
 # I'm stealing this
 def send_replica_delete(key):
     for shard_address in shard_map[keyshard_ID]:
