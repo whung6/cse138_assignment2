@@ -78,15 +78,10 @@ def initialize_context():
 
 
 #builds a map of the network(shard info) based on view
-#shards[i] is a list of addresses mapped to that shard
-#calculate which shard a particular key is in by hash(key) % len(shards)
-#note: this is a pure function and does _not_ set shards, use its output
 def build_shard_table(n_shards):
     s = []
     for x in range(0, n_shards):
-        s.append([])
-        for i in range(0, repl_factor):
-            s[x].append(view[x * repl_factor + i])
+        s.append(view[x*repl_factor : (x+1)*repl_factor])
     return s
 
 def find_shard_index(shardList):
@@ -211,8 +206,11 @@ def putKey(keyname):
     global event_counter
 
     tempContext = req.get('causal-context')
+    if tempContext == {}:
+        tempContext = {"c": []}
+    tempContext = tempContext["c"]
 
-    if tempContext == '' or len(tempContext) != len(context) or type(tempContext[0]) is not list or len(
+    if len(tempContext) != len(context) or type(tempContext[0]) is not list or len(
             tempContext[0]) != len(context[0]) or type(tempContext[0][0]) is not int:
         # treat it as a 0 context
         tempContext = initialize_context()
@@ -235,7 +233,7 @@ def putKey(keyname):
             if 'from_node' in request.headers:
                 payload['address'] = ADDRESS
             tempContext[keyshard_ID] = context[keyshard_ID]
-            payload['causal-context'] = tempContext
+            payload['causal-context'] = {'c': tempContext}
             #this should send to each replica the new values
             send_replica(keyname)
             return jsonify(payload), 200
@@ -251,7 +249,7 @@ def putKey(keyname):
             #this should send to each replica the new values
             send_replica(keyname)
             tempContext[keyshard_ID] = context[keyshard_ID]
-            payload = {"message": 'Added successfully', 'causal-context': tempContext}
+            payload = {"message": 'Added successfully', 'causal-context': {"c": tempContext}}
             return jsonify(payload), 200
 
     else:
@@ -265,7 +263,12 @@ def getKey(keyname):
     global event_counter
     req = request.get_json()
     tempContext = req['causal-context']
-    
+
+    tempContext = req.get('causal-context')
+    if tempContext == {}:
+        tempContext = {"c": []}
+    tempContext = tempContext["c"]
+
     # Check if correct bin.
     if bin == keyshard_ID:
         # Check client context and initialize if needed.
@@ -287,7 +290,7 @@ def getKey(keyname):
                     payload['address'] = ADDRESS
                 tempContext[keyshard_ID] = context[keyshard_ID]
                 d[keyname]['context'] = tempContext[keyshard_ID]
-                payload['causal-context'] = tempContext
+                payload['causal-context'] = {'c': tempContext}
                 # Update our vector clock.
                 updateVectorClock()
                 # Update event counter.
@@ -341,7 +344,7 @@ def getShard(id):
         for key in d.keys():
             if d[key]['exist']:
                 counter = counter + 1
-        return jsonify({"message": 'Shard information retrieved successfully', "shard-id": bin, "key-count": counter, "causal-context": context, "replicas": shard_map[bin]})
+        return jsonify({"message": 'Shard information retrieved successfully', "shard-id": bin, "key-count": counter, "causal-context": {'c': context}, "replicas": shard_map[bin]})
     else:
         return forward_request_multiple(request, shard_map[bin])
 
@@ -355,7 +358,7 @@ def getallShards():
         except Exception:
             return "Node " + shard[0] + " did not respond to a request for its membership", 400
         shardList.append(shard_map.index(shard))
-    return jsonify({"message": 'Shard membership retrieved successfully', "causal-context": context, "shards": shardList})
+    return jsonify({"message": 'Shard membership retrieved successfully', "causal-context": {'c': context}, "shards": shardList})
     
     
 # I'm stealing this
@@ -396,6 +399,9 @@ def deleteKey(keyname):
         # Get request
         req = request.get_json()
         tempContext = req['causal-context']
+        if tempContext == {}:
+            tempContext = {"c": []}
+        tempContext = tempContext["c"]
         # client doesn't have a context or client's context is outdated for the current view
         if tempContext == '' or len(tempContext) != len(context) or type(tempContext[0]) is not list or len(tempContext[0]) != len(context[0]) or type(tempContext[0][0]) is not int:
             # treat it as a 0 context
@@ -406,7 +412,7 @@ def deleteKey(keyname):
             # refuse to serve: we do not know what other things does the client know about and could
             # possibly violate causality, so we give them OUR most-updated context
             return json.dumps({'message': 'Error in PUT', 'error': 'Unable to satisfy request',
-                               'causal-context': tempContext}), 503
+                'causal-context': {'c': tempContext}}), 503
         # if it's equal or smaller or concurrent
         else:
             # if this key exist
@@ -423,7 +429,7 @@ def deleteKey(keyname):
                 payload = {'doesExist': True, 'message': 'Deleted successfully'}
                 if 'from_node' in request.headers:
                     payload['address'] = ADDRESS
-                payload['causal-context'] = tempContext
+                payload['causal-context'] = {'c': tempContext}
                 # append to event_log, 'poop' is just to make all entries equal length
                 event_counter = event_counter + 1
                 event_log.append([copy.deepcopy(context[keyshard_ID]), 'DEL', keyname, event_counter, 'poop'])
@@ -433,7 +439,7 @@ def deleteKey(keyname):
                 tempContext[keyshard_ID] = context[keyshard_ID]
                 # this does not exist
                 return jsonify(doesExist=False, error='Key does not exist', message='Error in DELETE',
-                               context=tempContext), 404
+                        context={'c': tempContext}), 404
 
     else:
         # for all node that is in the destination keyshard
@@ -635,20 +641,20 @@ def viewChange():
     req = request.get_json()
     old_view = view
     view = req['view']
-    repl_factor = int(req['repl_factor'])
+    repl_factor = int(req['repl-factor'])
     keyshard_ID = math.floor(view.index(ADDRESS) / repl_factor)
     node_ID = view.index(ADDRESS) % repl_factor
     shard_map = build_shard_table(int(len(view) / repl_factor))
     # if we need to, notify all the other nodes of this view change
     if 'from_node' not in request.headers:
-        for node in old_view:
+        for node in set(view + old_view):
             # since there won't be partition when view-change is happening
             # we can abuse that
             if node != ADDRESS:
                 status_code = 0
                 while status_code != 200:
                     _, status_code = forward_request(request, node)
-        for node in old_view:
+        for node in set(view + old_view):
             if node != ADDRESS:
                 status_code = 0
                 while status_code != 200:
