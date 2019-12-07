@@ -50,6 +50,7 @@ acks = {}
 
 # Current view
 view = []
+old_view = []
 
 testString = ""
 
@@ -80,12 +81,14 @@ def initialize_context():
 #shards[i] is a list of addresses mapped to that shard
 #calculate which shard a particular key is in by hash(key) % len(shards)
 #note: this is a pure function and does _not_ set shards, use its output
-def build_shard_table(v,n_shards):
+def build_shard_table(n_shards):
     s = []
-    for i in range(0,len(v),n_shards):
-        s.append(v[i:i+n_shards])#just smush each block of n_shards nodes into the thing. Since views are always in the same order this works.
-
+    for x in range(0, n_shards):
+        s.append([])
+        for i in range(0, repl_factor):
+            s[x].append(view[x * repl_factor + i])
     return s
+
 def find_shard_index(shardList):
     for i in range(len(shardList)):
         if ADDRESS in shardList[i]:
@@ -147,15 +150,15 @@ def xordist_get_addr(key):
 
 def send_replica(key):
     for shard_address in shard_map[keyshard_ID]:
-        if(shard_address != ADDRESS):
+        if shard_address != ADDRESS:
             try:
                 requests.put(url="http://" + shard_address + "/kv-store/keys_replica/" + key,
                                 headers={'from_node': ADDRESS, "Content-Type": "application/json"},
-                                data="{\"value\": \"" + d[key]['value'] + "\"}")
+                                data={"value": d[key]['value'], "context": context[keyshard_ID]})
             except ConnectionError:
-                return jsonify(error='Node ' + shard_address + " is down", message='Error in ' + request.method), 503
+                pass
             except requests.exceptions.ConnectionError:
-                return jsonify(error='Node ' + shard_address + " is down", message='Error in ' + request.method), 503
+                pass
 
     return 1
 
@@ -169,8 +172,8 @@ def put_replica(keyname):
     # Get request
     req = request.get_json()
     global event_counter
-
-    event_log.append([copy.deepcopy(context[keyshard_ID]), 'PUT', keyname, event_counter, req.get('value')])
+    event_counter = event_counter + 1
+    event_log.append([copy.deepcopy(req['context']), 'PUT', keyname, event_counter, req.get('value')])
     
     if keyname in d:
         d[keyname]['value'] = req.get('value')
@@ -207,27 +210,35 @@ def putKey(keyname):
     req = request.get_json()
     global event_counter
 
-    client_context = req.get('causal-context')
+    tempContext = req.get('causal-context')
 
-    #this checks if the view is currently the same if not then itll return the nodes current context
-    #if(client_context == '' or len(client_context) != len(context) or len(context[0]) != len(client_context[0])):
-    #    return(context)    
+    if tempContext == '' or len(tempContext) != len(context) or type(tempContext[0]) is not list or len(
+            tempContext[0]) != len(context[0]) or type(tempContext[0][0]) is not int:
+        # treat it as a 0 context
+        tempContext = initialize_context()
 
     if bin == keyshard_ID:
+        if areContextStrictlyLarger(tempContext[keyshard_ID], context[keyshard_ID]):
+            tempContext[keyshard_ID] = context[keyshard_ID]
+            return jsonify(error = 'Unable to satisfy request.', message = 'Error in GET'), 503
+        if not req or "value" not in req:
+            return jsonify(error='value is missing', message='Error in PUT'), 400
         updateVectorClock()
         event_counter = event_counter + 1
         event_log.append([copy.deepcopy(context[keyshard_ID]), 'PUT', keyname, event_counter, req.get('value')])
-        if not req or "value" not in req:
-            return jsonify(error='value is missing', message='Error in PUT'), 400
-
         # Check if key already exists
         if keyname in d.keys() and d[keyname]['exist']:
             d[keyname]['value'] = req.get('value')
             d[keyname]['context'] = copy.deepcopy(context[keyshard_ID])
-
+            payload = {"message": 'Updated successfully'}
+            # If it's not directly from client, add the correct address
+            if 'from_node' in request.headers:
+                payload['address'] = ADDRESS
+            tempContext[keyshard_ID] = context[keyshard_ID]
+            payload['causal-context'] = tempContext
             #this should send to each replica the new values
             send_replica(keyname)
-            return jsonify(message='Updated successfully', replaced=True,"causal-context" = context), 200
+            return jsonify(payload), 200
             
         # Add new key
         else:
@@ -239,8 +250,9 @@ def putKey(keyname):
             d[keyname]['exist'] = True
             #this should send to each replica the new values
             send_replica(keyname)
-
-            return jsonify(message='Added successfully', replaced=False, "causal-context" = context), 200
+            tempContext[keyshard_ID] = context[keyshard_ID]
+            payload = {"message": 'Added successfully', 'causal-context': tempContext}
+            return jsonify(payload), 200
 
     else:
         return forward_request_multiple(request, shard_map[bin])
@@ -257,7 +269,8 @@ def getKey(keyname):
     # Check if correct bin.
     if bin == keyshard_ID:
         # Check client context and initialize if needed.
-        if tempContext == '' or len(tempContext) != len(context) or len(tempContext[0]) != len(context[0]):
+        if tempContext == '' or len(tempContext) != len(context) or type(tempContext[0]) is not list or len(
+                tempContext[0]) != len(context[0]) or type(tempContext[0][0]) is not int:
             tempContext = initialize_context()
  
         # Violates causal causality as client context is greater.
@@ -332,16 +345,32 @@ def getShard(id):
     else:
         return forward_request_multiple(request, shard_map[bin])
 
-# Get all shards
-@app.route('/kv-store/shards', methods=['GET'])
-def getAllShards():
-    listOfShards = []
-    shardID = 0
-    for bin in shard_map:
-        listOfShards.append(shardID)
-        shardID = shardID + 1
-    return jsonify({"message": 'Shard information retrieved successfully', "causal-context": context, "shard-ids": listOfShards}),200
-     
+# I'm stealing this
+def send_replica_delete(key):
+    for shard_address in shard_map[keyshard_ID]:
+        if shard_address != ADDRESS:
+            try:
+                requests.put(url="http://" + shard_address + "/kv-store/send_replica_delete/" + key,
+                             headers={'from_node': ADDRESS, "Content-Type": "application/json"},
+                             data={"context": context[keyshard_ID]})
+            except ConnectionError:
+                pass
+            except requests.exceptions.ConnectionError:
+                pass
+
+    return 1
+
+@app.route('/kv-store/send_replica_delete/<keyname>', methods=['PUT'])
+def delete_replica(keyname):
+    req = request.get_json()
+    global event_counter
+    event_counter = event_counter  + 1
+    event_log.append([copy.deepcopy(req['context']), 'DEL', keyname, event_counter, 'poop'])
+    if keyname in d:
+        d[keyname]['exist'] = False
+        return jsonify(message='Updated successfully', replaced=True), 200
+
+
 # Delete key
 #TODO: immediate gossip
 @app.route('/kv-store/keys/<keyname>', methods=['DELETE'])
@@ -385,6 +414,7 @@ def deleteKey(keyname):
                 # append to event_log, 'poop' is just to make all entries equal length
                 event_counter = event_counter + 1
                 event_log.append([copy.deepcopy(context[keyshard_ID]), 'DEL', keyname, event_counter, 'poop'])
+                send_replica_delete(keyname)
                 return jsonify(payload), 200
             else:
                 tempContext[keyshard_ID] = context[keyshard_ID]
@@ -423,7 +453,11 @@ def deleteKey(keyname):
 # Get key count
 @app.route('/kv-store/key-count', methods=['GET'])
 def getKeyCount():
-    return jsonify({"message": "Key count retrieved successfully", "key-count": len(d)}), 200
+    counter = 0
+    for entry in d.values():
+        if entry['exist']:
+            counter = counter + 1
+    return jsonify({"message": "Key count retrieved successfully", "key-count": counter}), 200
 
 
 @app.route('/get-view', methods=['GET'])
@@ -528,12 +562,13 @@ class Poop(dict):
 
 @app.route('/debug', methods=['GET'])
 def debug():
-        return "\nd\t" + str(Poop(d)) + "\nevent log\t" + str(event_log) + \
-               "\ncontext\t" + str(context) + "\nacks\t" + \
-               str(acks) + "\nkeyshard_ID\t" + str(keyshard_ID) + "\nnode_ID\t" + str(node_ID) + \
-               "\nevent_counter\t" + str(event_counter) + "\nview\t" + str(view)  + "\nshard_map\t" + str(shard_map) + \
-               "\npartial partition list\t" + str(partialPartitionList) +\
-               "\ntest-string\t" + testString
+    return "\nd\t" + str(Poop(d)) + "\nevent log\t" + str(event_log) + \
+           "\ncontext\t" + str(context) + "\nacks\t" + \
+           str(acks) + "\nkeyshard_ID\t" + str(keyshard_ID) + "\nnode_ID\t" + str(node_ID) + \
+           "\nevent_counter\t" + str(event_counter) + "\nview\t" + str(view)  + "\nshard_map\t" + str(shard_map) + \
+           "\npartial partition list\t" + str(partialPartitionList) + "\nrepl_factor\t" + str(repl_factor) + \
+           "\nview_change_counter\t" + str(view_change_counter) + "\nold_view\t" + str(old_view) + \
+           "\nADDRESS\t" + ADDRESS + "\ntest-string\t" + testString
 
 
 # acks of periodic gossip
@@ -575,28 +610,38 @@ def poop2(index):
 # perform a view change
 def viewChange():
     global view
+    global node_ID
+    global old_view
     global shard_map
     global keyshard_ID
+    global shouldDoGossip
+    global repl_factor
+    global view_change_counter
+    view_change_counter = 0
     shouldDoGossip = False #turn off gossip until we are done
     req = request.get_json()
-    new_view = req['view']
-    new_repl_factor = int(req['repl_factor'])
-    new_shard_map = []
-    for index in range(0,math.floor(len(view)/repl_factor)):
-        new_shard_map.append(view[index*repl_factor:(index+1)*repl_factor])
+    old_view = view
+    view = req['view']
+    repl_factor = int(req['repl_factor'])
     keyshard_ID = math.floor(view.index(ADDRESS) / repl_factor)
-    view = new_view
-    shard_map = build_shard_table(view,repl_factor)
-    shard_map = new_shard_map
+    node_ID = view.index(ADDRESS) % repl_factor
+    shard_map = build_shard_table(int(len(view) / repl_factor))
     # if we need to, notify all the other nodes of this view change
     if 'from_node' not in request.headers:
-        for node in view:
+        for node in old_view:
+            # since there won't be partition when view-change is happening
+            # we can abuse that
             if node != ADDRESS:
-                forward_request(request, node)
-        for node in view:
+                status_code = 0
+                while status_code != 200:
+                    _, status_code = forward_request(request, node)
+        for node in old_view:
             if node != ADDRESS:
-                requests.put(url="http://" + node + "/key-distribute",
-                             headers={'from_node': ADDRESS})
+                status_code = 0
+                while status_code != 200:
+                    response = requests.put(url="http://" + node + "/key-distribute",
+                                 headers={'from_node': ADDRESS})
+                    status_code = response.status_code
         key_distribute()
         view_map = []
         for shard in shard_map:
@@ -614,44 +659,97 @@ def viewChange():
 #expects the message body to be a JSON dict to be merged with the current dict, with the same structure
 @app.route('/kv-store/insert-blob', methods = ['PUT'])
 def insertBlob():
+    global testString
     global view_change_counter
     global d
+    global shouldDoGossip
+    testString = testString + "\tinside"
     req = request.get_json()
     for key in list(req.keys()):
         #first check if the newly supplied value is newer than the one we have, and if so replace. Otherwise we leave it alone
-        if key in d:
-            if areContextStrictlyLarger(req[key]['context'],d[key]['context']):
+        if key in d.keys():
+            replace = False
+            if areContextConcurrent(req[key]['context'], d[key]['context']):
+                for index in range(len(d[key]['context'])):
+                    if req[key]['context'][index] > d[key]['context'][index]:
+                        replace = True
+                        break
+                    elif req[key]['context'][index] < d[key]['context'][index]:
+                        break
+            if replace or areContextStrictlyLarger(req[key]['context'], d[key]['context']):
                 d[key] = req[key]
         else:
             d[key] = req[key]
+    testString = testString + "\n================" + request.headers['from_node'] + "===============" + str(view_change_counter) + "==============="
     view_change_counter = view_change_counter + 1
-    if view_change_counter == len(view): #received shit from everyone, now we're done and we can set all the vector clocks to 0 and do gossip again
+    if view_change_counter == len(old_view) and request.headers['from_node'] != ADDRESS: #received shit from everyone, now we're done and we can set all the vector clocks to 0 and do gossip again
         for key in d.keys():
             for i in range(0,len(d[key]['context'])): #reset the vector clock
-                d[key]['context'][i] = 0
+                d[key]['context'] = initialize_context()[keyshard_ID]
         shouldDoGossip = True
-    return "ok",200
+        global context
+        global acks
+        acks = {}
+        if len(acks.keys()) < repl_factor - 1:
+            for node in shard_map[keyshard_ID]:
+                if node != ADDRESS:
+                    acks[str(view.index(node))] = -1
+        context = initialize_context()
+        if request.headers['from_node'] != ADDRESS:
+            pop_list = []
+            for key in d.keys():
+                testString = testString + "\n---------------" + key + "------------" + str(
+                        hash(key) % len(shard_map)) + "------------"
+                if hash(key) % len(shard_map) != keyshard_ID:
+                    pop_list.append(key)
+            for item in pop_list:
+                del d[item]
+    return "ok", 200
 
 
 # helper method to rehash and redistribute keys according to the new view
 # returns either an error message detailing which node failed to accept their new key(s) or the string "ok"
 # this method tries to do everything in order, rather than broadcasting
 def key_distribute():
+    global testString
     #sends blobs to everyone in the new view
     for index in range(0,len(shard_map)):
         to_send = {}
-        for key in list(d.keys()):
+        for key in d.keys():
             if hash(key) % len(shard_map) == index: 
                 to_send[key] = d[key]
         for node in shard_map[index]: #send the blob to every member of the shard, so that we start with a clean slate everywhere
             try:
-                requests.put(new_addr + "/kv-store/insert-blob", headers = {'from_node': ADDRESS},
-                            data = jsonify(to_send))
-            except Exception:
-                return Exception
-        #delete the keys locally once the blob is sent
-        for key in to_send.keys():
-            del d[key]
+                testString = testString + "\n\t" + node + "\t" + str(to_send) + "\tbefore"
+                requests.put('http://' + node + "/kv-store/insert-blob",
+                                        headers={'from_node': ADDRESS, "Content-Type": "application/json"},
+                                        data=json.dumps(to_send))
+                testString = testString + "\tafter"
+            except Exception as e:
+                testString = testString + "error????????????????"
+    if view_change_counter == len(old_view):
+        pop_list = []
+        global shouldDoGossip
+        for key in d.keys():
+            testString = testString + "\n---------------" + key + "------------" + str(
+                hash(key) % len(shard_map)) + "------------"
+            if hash(key) % len(shard_map) != keyshard_ID:
+                pop_list.append(key)
+        for item in pop_list:
+            del d[item]
+        shouldDoGossip = True
+        global context
+        global acks
+        acks = {}
+        if len(acks.keys()) < repl_factor - 1:
+            for node in shard_map[keyshard_ID]:
+                if node != ADDRESS:
+                    acks[str(view.index(node))] = -1
+        context = initialize_context()
+        for key in d.keys():
+            for i in range(0,len(d[key]['context'])): #reset the vector clock
+                d[key]['context'] = context[keyshard_ID]
+    return "stfu"
 
 ##EXPERIMENTAL FEATURE
 # does the same thing as the above method, but adapted for xordist
@@ -736,19 +834,22 @@ def periodicGossip():
         if len(event_log) > 0 and shouldDoGossip:
             # for every node that is in the same keyshard as this node
             for node in shard_map[keyshard_ID]:
+
                 # if it's not this node
                 if node != ADDRESS:
-                    # put the gossip request
-                    try:
-                        requests.put(url="http://" + node + "/gossip",
-                                     headers={'from_node': ADDRESS, "Content-Type": "application/json"},
-                                     # the list comprehension just means only send the ones that the target
-                                     # node has not seen
-                                     data=json.dumps([entry for entry in event_log if entry[3] > acks[str(view.index(node))]]))
-                    except ConnectionError:
-                        pass
-                    except requests.exceptions.ConnectionError:
-                        pass
+                    # put the gossip request4
+                    event_list = [entry for entry in event_log if entry[3] > acks[str(view.index(node))]]
+                    if len(event_list) > 0:
+                        try:
+                            requests.put(url="http://" + node + "/gossip",
+                                         headers={'from_node': ADDRESS, "Content-Type": "application/json"},
+                                         # the list comprehension just means only send the ones that the target
+                                         # node has not seen
+                                         data=json.dumps(event_list))
+                        except ConnectionError:
+                            pass
+                        except requests.exceptions.ConnectionError:
+                            pass
 
 
 if __name__ == "__main__":
